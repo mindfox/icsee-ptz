@@ -26,6 +26,7 @@ camera_lock = threading.Lock()
 onvif_lock = threading.Lock()
 snapshot_lock = threading.Lock()
 log_lock = threading.Lock()
+feed_lock = threading.Lock()
 
 HOST = os.environ["CAMERA_HOST"]
 PORT = int(os.environ.get("CAMERA_PORT", "34567"))
@@ -65,6 +66,7 @@ latest_snapshot_sequence = 0
 latest_snapshot_time = None
 snapshot_error = None
 profile_token = None
+feed_enabled = False
 
 
 def add_log(level: str, message: str) -> None:
@@ -208,8 +210,13 @@ def capture_snapshot_once() -> None:
 
 
 def snapshot_worker() -> None:
-    add_log("INFO", f"Snapshot worker started; interval={SNAPSHOT_INTERVAL:g}s")
+    add_log("INFO", "Snapshot worker started; feed is disabled by default")
     while True:
+        with feed_lock:
+            enabled = feed_enabled
+        if not enabled:
+            time.sleep(0.25)
+            continue
         started = time.monotonic()
         capture_snapshot_once()
         remaining = SNAPSHOT_INTERVAL - (time.monotonic() - started)
@@ -227,26 +234,27 @@ def index():
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>iCSee PTZ Lab</title>
 <style>
-:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:18px}}main{{max-width:1180px;margin:auto}}.panel{{background:#1d1d1d;border:1px solid #333;border-radius:12px;padding:14px;margin-bottom:14px}}h1,h2{{margin:0 0 10px}}.small{{font-size:13px;color:#aaa;margin:0 0 12px}}.camera-row{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:14px;align-items:start}}.feed-wrap{{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:260px}}.feed-wrap img{{display:block;width:100%;max-height:68vh;object-fit:contain;background:#000}}.feed-badge{{position:absolute;left:8px;bottom:8px;background:#000b;padding:4px 7px;border-radius:5px;font:12px ui-monospace,monospace}}.controls{{display:flex;flex-direction:column;gap:10px}}.grid{{display:grid;grid-template-columns:repeat(3,58px);gap:7px;justify-content:center}}.zoom,.preset-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}button{{font-size:20px;min-height:48px;border:1px solid #444;border-radius:8px;background:#333;color:#fff;cursor:pointer;padding:5px 9px}}button:hover{{background:#444}}button:active{{background:#666}}.zoom button,.restart,.preset-actions button{{font-size:13px;min-height:40px}}.step-box,.preset-box{{display:flex;flex-direction:column;gap:7px;background:#272727;border:1px solid #444;border-radius:8px;padding:8px 10px;font-size:13px}}.step-row{{display:flex;align-items:center;justify-content:space-between;gap:10px}}.step-box input{{width:72px;font-size:16px;padding:5px 4px;text-align:center}}.preset-box input,.preset-box select{{width:100%;font-size:13px;padding:7px}}.restart{{background:#633}}.restart:hover{{background:#844}}.console{{height:280px;overflow:auto;background:#080808;border:1px solid #333;border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;color:#c9f7d2}}.console .error{{color:#ff9d9d}}.console .warning{{color:#ffd27d}}.status{{font:12px ui-monospace,monospace;color:#b8f7c5;min-height:34px;white-space:pre-wrap;word-break:break-word}}.footer-row{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}}.footer-row h2{{margin:0}}.footer-row button{{font-size:12px;min-height:32px}}@media(max-width:760px){{.camera-row{{grid-template-columns:1fr}}.controls{{max-width:280px;margin:auto;width:100%}}.feed-wrap{{min-height:190px}}}}
+:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:18px}}main{{max-width:1180px;margin:auto}}.panel{{background:#1d1d1d;border:1px solid #333;border-radius:12px;padding:14px;margin-bottom:14px}}h1,h2{{margin:0 0 10px}}.small{{font-size:13px;color:#aaa;margin:0 0 12px}}.camera-row{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:14px;align-items:start}}.feed-wrap{{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:260px}}.feed-wrap img{{display:none;width:100%;max-height:68vh;object-fit:contain;background:#000}}.feed-badge{{position:absolute;left:8px;bottom:8px;background:#000b;padding:4px 7px;border-radius:5px;font:12px ui-monospace,monospace}}.controls{{display:flex;flex-direction:column;gap:10px}}.grid{{display:grid;grid-template-columns:repeat(3,58px);gap:7px;justify-content:center}}.zoom,.preset-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}button{{font-size:20px;min-height:48px;border:1px solid #444;border-radius:8px;background:#333;color:#fff;cursor:pointer;padding:5px 9px}}button:hover{{background:#444}}button:active{{background:#666}}.zoom button,.restart,.preset-actions button,.feed-toggle{{font-size:13px;min-height:40px}}.step-box,.preset-box{{display:flex;flex-direction:column;gap:7px;background:#272727;border:1px solid #444;border-radius:8px;padding:8px 10px;font-size:13px}}.step-row{{display:flex;align-items:center;justify-content:space-between;gap:10px}}.step-box input{{width:72px;font-size:16px;padding:5px 4px;text-align:center}}.preset-box input,.preset-box select{{width:100%;font-size:13px;padding:7px}}.restart{{background:#633}}.restart:hover{{background:#844}}.console{{height:280px;overflow:auto;background:#080808;border:1px solid #333;border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;color:#c9f7d2}}.console .error{{color:#ff9d9d}}.console .warning{{color:#ffd27d}}.status{{font:12px ui-monospace,monospace;color:#b8f7c5;min-height:34px;white-space:pre-wrap;word-break:break-word}}.footer-row{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}}.footer-row h2{{margin:0}}.footer-row button{{font-size:12px;min-height:32px}}@media(max-width:760px){{.camera-row{{grid-template-columns:1fr}}.controls{{max-width:280px;margin:auto;width:100%}}.feed-wrap{{min-height:190px}}}}
 </style></head><body><main>
-<div class="panel"><h1>iCSee PTZ Lab</h1><p class="small">Snapshots use DVRIP. PTZ and saved positions use ONVIF.</p>
-<div class="camera-row"><div class="feed-wrap"><img id="view" alt="Camera snapshot"><div id="feedBadge" class="feed-badge">Waiting for snapshot…</div></div>
-<div class="controls"><div class="grid"><button data-cmd="up_left">↖</button><button data-cmd="up">▲</button><button data-cmd="up_right">↗</button><button data-cmd="left">◀</button><button id="refresh">●</button><button data-cmd="right">▶</button><button data-cmd="down_left">↙</button><button data-cmd="down">▼</button><button data-cmd="down_right">↘</button></div>
+<div class="panel"><h1>iCSee PTZ Lab</h1><p class="small">Feed is disabled by default. PTZ and saved positions use ONVIF.</p>
+<div class="camera-row"><div class="feed-wrap"><img id="view" alt="Camera snapshot"><div id="feedBadge" class="feed-badge">Feed disabled</div></div>
+<div class="controls"><button id="feedToggle" class="feed-toggle">Enable web feed</button><div class="grid"><button data-cmd="up_left">↖</button><button data-cmd="up">▲</button><button data-cmd="up_right">↗</button><button data-cmd="left">◀</button><button id="refresh">●</button><button data-cmd="right">▶</button><button data-cmd="down_left">↙</button><button data-cmd="down">▼</button><button data-cmd="down_right">↘</button></div>
 <div class="zoom"><button data-cmd="zoom_in">Zoom +</button><button data-cmd="zoom_out">Zoom −</button></div>
 <label class="step-box" for="ptzStep"><span class="step-row"><span>Movement step</span><input id="ptzStep" type="number" min="1" max="10" step="1" value="{DEFAULT_PTZ_STEP}" title="Use Up/Down keys or the spinner arrows"></span><span class="small">Step 1 = {PTZ_STEP_SECONDS:g}s pulse</span></label>
-<div class="preset-box"><strong>Saved positions</strong><input id="presetName" maxlength="40" placeholder="Position name"><button id="savePreset">Save current position</button><select id="presetSelect"><option value="">Loading presets…</option></select><div class="preset-actions"><button id="reloadPresets">Refresh list</button><button id="gotoPreset">Go to selected</button></div></div>
+<div class="preset-box"><strong>Saved positions</strong><input id="presetName" maxlength="40" placeholder="Position name"><button id="savePreset">Save current position</button><select id="presetSelect"><option value="">Press Refresh list to load presets</option></select><div class="preset-actions"><button id="reloadPresets">Refresh list</button><button id="gotoPreset">Go to selected</button></div></div>
 <div id="status" class="status">Ready</div><button id="restart" class="restart">Restart web service</button></div></div></div>
 <div class="panel"><div class="footer-row"><h2>Console</h2><button id="clearConsole">Clear view</button></div><div id="console" class="console">Loading logs…</div></div>
 </main><script>
-const image=document.getElementById('view'),status=document.getElementById('status'),consoleBox=document.getElementById('console'),badge=document.getElementById('feedBadge'),stepInput=document.getElementById('ptzStep'),presetName=document.getElementById('presetName'),presetSelect=document.getElementById('presetSelect');let shownSequence=-1,clearedBefore=0,renderedLogCount=-1;const savedStep=localStorage.getItem('ptzStep');if(savedStep)stepInput.value=savedStep;function normalizedStep(){{const value=Math.max(1,Math.min(10,parseInt(stepInput.value||'{DEFAULT_PTZ_STEP}',10)));stepInput.value=value;localStorage.setItem('ptzStep',value);return value}}stepInput.addEventListener('change',normalizedStep);stepInput.addEventListener('input',()=>{{if(stepInput.value!=='')localStorage.setItem('ptzStep',stepInput.value)}});
-function refreshImage(force=false){{fetch('/api/snapshot-status',{{cache:'no-store'}}).then(r=>r.json()).then(s=>{{badge.textContent=s.error?('Snapshot error: '+s.error):(s.sequence?('Snapshot #'+s.sequence+' • '+s.age_seconds.toFixed(1)+'s old'):'Waiting for snapshot…');if(s.sequence&&(force||s.sequence!==shownSequence)){{shownSequence=s.sequence;image.src='/snapshot.jpg?sequence='+s.sequence+'&t='+Date.now()}}}}).catch(e=>badge.textContent='Status error: '+e)}}
-async function move(cmd){{const step=normalizedStep();status.textContent='Sending '+cmd+' at step '+step+'…';try{{const r=await fetch('/api/ptz',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command:cmd,step}})}});const j=await r.json();status.textContent=(r.ok?'Completed: ':'Failed: ')+JSON.stringify(j);setTimeout(()=>refreshImage(true),250)}}catch(e){{status.textContent='Request failed: '+e}}finally{{loadLogs()}}}}
-async function loadPresets(){{presetSelect.innerHTML='<option value="">Loading presets…</option>';try{{const r=await fetch('/api/presets',{{cache:'no-store'}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);presetSelect.innerHTML='<option value="">Select a saved position</option>';for(const p of j.presets){{const o=document.createElement('option');o.value=p.token;o.textContent=p.name+' ['+p.token+']';presetSelect.appendChild(o)}}if(!j.presets.length)presetSelect.innerHTML='<option value="">No saved positions</option>'}}catch(e){{presetSelect.innerHTML='<option value="">Unable to load presets</option>';status.textContent='Preset list failed: '+e}}}}
-async function savePreset(){{const name=presetName.value.trim();if(!name){{status.textContent='Enter a position name first';presetName.focus();return}}status.textContent='Saving current position…';try{{const r=await fetch('/api/presets',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name}})}}),j=await r.json();status.textContent=(r.ok?'Saved: ':'Failed: ')+JSON.stringify(j);if(r.ok){{presetName.value='';await loadPresets()}}}}catch(e){{status.textContent='Save failed: '+e}}finally{{loadLogs()}}}}
-async function gotoPreset(){{const token=presetSelect.value;if(!token){{status.textContent='Select a saved position first';return}}status.textContent='Moving to saved position…';try{{const r=await fetch('/api/presets/'+encodeURIComponent(token)+'/goto',{{method:'POST'}}),j=await r.json();status.textContent=(r.ok?'Moving: ':'Failed: ')+JSON.stringify(j);setTimeout(()=>refreshImage(true),1000)}}catch(e){{status.textContent='Preset move failed: '+e}}finally{{loadLogs()}}}}
+const image=document.getElementById('view'),status=document.getElementById('status'),consoleBox=document.getElementById('console'),badge=document.getElementById('feedBadge'),feedToggle=document.getElementById('feedToggle'),stepInput=document.getElementById('ptzStep'),presetName=document.getElementById('presetName'),presetSelect=document.getElementById('presetSelect');let shownSequence=-1,clearedBefore=0,renderedLogCount=-1,feedEnabled=false;const savedStep=localStorage.getItem('ptzStep');if(savedStep)stepInput.value=savedStep;function normalizedStep(){{const value=Math.max(1,Math.min(10,parseInt(stepInput.value||'{DEFAULT_PTZ_STEP}',10)));stepInput.value=value;localStorage.setItem('ptzStep',value);return value}}stepInput.addEventListener('change',normalizedStep);stepInput.addEventListener('input',()=>{{if(stepInput.value!=='')localStorage.setItem('ptzStep',stepInput.value)}});
+function refreshImage(force=false){{if(!feedEnabled)return;fetch('/api/snapshot-status',{{cache:'no-store'}}).then(r=>r.json()).then(s=>{{badge.textContent=s.error?('Snapshot error: '+s.error):(s.sequence?('Snapshot #'+s.sequence+' • '+s.age_seconds.toFixed(1)+'s old'):'Waiting for snapshot…');if(s.sequence&&(force||s.sequence!==shownSequence)){{shownSequence=s.sequence;image.src='/snapshot.jpg?sequence='+s.sequence+'&t='+Date.now()}}}}).catch(e=>badge.textContent='Status error: '+e)}}
+async function setFeed(enabled){{try{{const r=await fetch('/api/feed',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{enabled}})}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);feedEnabled=j.enabled;feedToggle.textContent=feedEnabled?'Disable web feed':'Enable web feed';image.style.display=feedEnabled?'block':'none';badge.textContent=feedEnabled?'Waiting for snapshot…':'Feed disabled';if(feedEnabled)refreshImage(true);else image.removeAttribute('src');status.textContent='Web feed '+(feedEnabled?'enabled':'disabled')}}catch(e){{status.textContent='Feed toggle failed: '+e}}finally{{loadLogs()}}}}
+async function move(cmd){{const step=normalizedStep();status.textContent='Sending '+cmd+' at step '+step+'…';try{{const r=await fetch('/api/ptz',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command:cmd,step}})}}),j=await r.json();status.textContent=(r.ok?'Completed: ':'Failed: ')+JSON.stringify(j);if(feedEnabled)setTimeout(()=>refreshImage(true),250)}}catch(e){{status.textContent='Request failed: '+e}}finally{{loadLogs()}}}}
+async function loadPresets(){{presetSelect.innerHTML='<option value="">Loading presets…</option>';try{{const r=await fetch('/api/presets',{{cache:'no-store'}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);presetSelect.innerHTML='<option value="">Select a saved position</option>';for(const p of j.presets){{const o=document.createElement('option');o.value=p.token;o.textContent=p.name+' ['+p.token+']';presetSelect.appendChild(o)}}if(!j.presets.length)presetSelect.innerHTML='<option value="">No saved positions</option>'}}catch(e){{presetSelect.innerHTML='<option value="">Unable to load presets</option>';status.textContent='Preset list failed: '+e}}finally{{loadLogs()}}}}
+async function savePreset(){{const name=presetName.value.trim();if(!name){{status.textContent='Enter a position name first';presetName.focus();return}}status.textContent='Saving current position…';try{{const r=await fetch('/api/presets',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name}})}}),j=await r.json();status.textContent=(r.ok?'Saved: ':'Failed: ')+JSON.stringify(j);if(r.ok)presetName.value=''}}catch(e){{status.textContent='Save failed: '+e}}finally{{loadLogs()}}}}
+async function gotoPreset(){{const token=presetSelect.value;if(!token){{status.textContent='Select a saved position first';return}}status.textContent='Moving to saved position…';try{{const r=await fetch('/api/presets/'+encodeURIComponent(token)+'/goto',{{method:'POST'}}),j=await r.json();status.textContent=(r.ok?'Moving: ':'Failed: ')+JSON.stringify(j)}}catch(e){{status.textContent='Preset move failed: '+e}}finally{{loadLogs()}}}}
 async function loadLogs(){{try{{const r=await fetch('/api/logs',{{cache:'no-store'}}),j=await r.json(),entries=j.entries.slice(clearedBefore);if(entries.length===renderedLogCount)return;const selection=window.getSelection();if(selection&&!selection.isCollapsed)return;const nearBottom=consoleBox.scrollHeight-consoleBox.scrollTop-consoleBox.clientHeight<24;consoleBox.innerHTML='';for(const e of entries){{const line=document.createElement('div');line.className=e.level.toLowerCase();line.textContent=`${{e.timestamp}} [${{e.level}}] ${{e.message}}`;consoleBox.appendChild(line)}}renderedLogCount=entries.length;if(nearBottom)consoleBox.scrollTop=consoleBox.scrollHeight}}catch(e){{consoleBox.textContent='Unable to load logs: '+e}}}}
 async function restartService(){{status.textContent='Restart requested. Reconnecting…';try{{await fetch('/api/restart',{{method:'POST'}})}}catch(e){{}}setTimeout(()=>location.reload(),2200)}}
-document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>move(b.dataset.cmd));document.getElementById('refresh').onclick=()=>refreshImage(true);document.getElementById('savePreset').onclick=savePreset;document.getElementById('reloadPresets').onclick=loadPresets;document.getElementById('gotoPreset').onclick=gotoPreset;document.getElementById('restart').onclick=restartService;document.getElementById('clearConsole').onclick=()=>fetch('/api/logs',{{cache:'no-store'}}).then(r=>r.json()).then(j=>{{clearedBefore=j.entries.length;renderedLogCount=0;consoleBox.textContent=''}});image.onerror=()=>status.textContent='Snapshot image failed to load; see console';refreshImage(true);loadPresets();loadLogs();setInterval(refreshImage,500);setInterval(loadLogs,1000);
+feedToggle.onclick=()=>setFeed(!feedEnabled);document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>move(b.dataset.cmd));document.getElementById('refresh').onclick=()=>refreshImage(true);document.getElementById('savePreset').onclick=savePreset;document.getElementById('reloadPresets').onclick=loadPresets;document.getElementById('gotoPreset').onclick=gotoPreset;document.getElementById('restart').onclick=restartService;document.getElementById('clearConsole').onclick=()=>fetch('/api/logs',{{cache:'no-store'}}).then(r=>r.json()).then(j=>{{clearedBefore=j.entries.length;renderedLogCount=0;consoleBox.textContent=''}});image.onerror=()=>status.textContent='Snapshot image failed to load; see console';loadLogs();setInterval(refreshImage,500);setInterval(loadLogs,1000);
 </script></body></html>'''
 
 
@@ -261,10 +269,24 @@ def snapshot():
 
 @app.get("/api/snapshot-status")
 def snapshot_status():
+    with feed_lock:
+        enabled = feed_enabled
     with snapshot_lock:
         sequence, captured_at, error = latest_snapshot_sequence, latest_snapshot_time, snapshot_error
     age = None if captured_at is None else max(0.0, time.time() - captured_at)
-    return jsonify(sequence=sequence, age_seconds=age, error=error)
+    return jsonify(enabled=enabled, sequence=sequence, age_seconds=age, error=error)
+
+
+@app.post("/api/feed")
+def feed_control():
+    global feed_enabled
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled", False))
+    with feed_lock:
+        changed = feed_enabled != enabled
+        feed_enabled = enabled
+    if changed:
+        add_log("WARNING" if enabled else "INFO", f"Web feed {'enabled' if enabled else 'disabled'} from UI")
+    return jsonify(enabled=enabled)
 
 
 @app.post("/api/ptz")
@@ -296,6 +318,7 @@ def ptz():
 
 @app.get("/api/presets")
 def presets_list():
+    add_log("INFO", "ONVIF GetPresets requested manually from UI")
     try:
         with onvif_lock:
             presets = onvif_get_presets()

@@ -1,2 +1,2 @@
 {"status": "passed", "test": "tcp_connect"}
-{"detail": {"meaning": "Password is incorrect", "response_keys": ["Name", "Ret", "SessionID"], "ret": 203}, "status": "failed", "test": "login"}
+{"detail": {"credential_variant": "exact", "meaning": "Password is incorrect", "response_keys": ["Name", "Ret", "SessionID"], "ret": 203}, "status": "failed", "test": "login"}

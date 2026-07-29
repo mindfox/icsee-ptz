@@ -80,19 +80,16 @@ def capture_snapshot_once() -> None:
     async def operation(camera):
         return await camera.snapshot(channel=0)
 
-    started = time.monotonic()
     try:
         with camera_lock:
             jpeg = run(with_camera(operation))
         if not jpeg:
             raise RuntimeError("camera returned no snapshot")
-        elapsed_ms = int((time.monotonic() - started) * 1000)
         with snapshot_lock:
             latest_snapshot = bytes(jpeg)
             latest_snapshot_sequence += 1
             latest_snapshot_time = time.time()
             snapshot_error = None
-        add_log("INFO", f"Snapshot #{latest_snapshot_sequence} captured in {elapsed_ms} ms ({len(jpeg)} bytes)")
     except Exception as exc:
         with snapshot_lock:
             snapshot_error = f"{type(exc).__name__}: {exc}"

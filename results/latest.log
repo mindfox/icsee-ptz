@@ -1,2 +1,2 @@
 {"status": "passed", "test": "tcp_connect"}
-{"detail": "camera rejected login", "status": "failed", "test": "login"}
+{"detail": {"meaning": "Password is incorrect", "response_keys": ["Name", "Ret", "SessionID"], "ret": 203}, "status": "failed", "test": "login"}

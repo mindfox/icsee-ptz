@@ -1,16 +1,23 @@
 import asyncio
+import importlib.util
 import json
 import os
 import socket
-import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from custom_components.icsee_ptz.asyncio_dvrip import DVRIPCam
+MODULE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "custom_components"
+    / "icsee_ptz"
+    / "asyncio_dvrip.py"
+)
+spec = importlib.util.spec_from_file_location("icsee_asyncio_dvrip", MODULE_PATH)
+if spec is None or spec.loader is None:
+    raise RuntimeError(f"Unable to load DVRIP module from {MODULE_PATH}")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+DVRIPCam = module.DVRIPCam
 
 
 def emit(name: str, status: str, detail: Any = None) -> None:
@@ -71,8 +78,22 @@ if __name__ == "__main__":
     try:
         raise SystemExit(asyncio.run(main()))
     except KeyError as exc:
-        print(json.dumps({"status": "failed", "detail": f"missing environment variable: {exc.args[0]}"}))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "detail": f"missing environment variable: {exc.args[0]}",
+                }
+            )
+        )
         raise SystemExit(2)
     except Exception as exc:
-        print(json.dumps({"status": "failed", "detail": f"{type(exc).__name__}: {exc}"}))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        )
         raise SystemExit(1)

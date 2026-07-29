@@ -7,3 +7,20 @@ services:
     volumes:
       - ./workspace:/workspace
     restart: unless-stopped
+
+  icsee-ptz-web:
+    build:
+      context: .
+    env_file:
+      - .env
+    entrypoint:
+      - python
+      - -u
+      - /workspace/source/lab/webui/app.py
+    ports:
+      - "${WEB_UI_BIND:-0.0.0.0}:${WEB_UI_PORT:-8095}:${WEB_UI_PORT:-8095}"
+    volumes:
+      - ./workspace:/workspace
+    depends_on:
+      - icsee-worker
+    restart: unless-stopped

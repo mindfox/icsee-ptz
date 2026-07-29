@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-RUN pip install --no-cache-dir flask==3.1.1
+RUN pip install --no-cache-dir flask==3.1.1 requests==2.32.4
 
 WORKDIR /app
 

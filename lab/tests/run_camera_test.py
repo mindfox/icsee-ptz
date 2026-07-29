@@ -20,11 +20,26 @@ spec.loader.exec_module(module)
 DVRIPCam = module.DVRIPCam
 
 
+def docker_log(message: str) -> None:
+    """Write a safe progress marker directly to the container log."""
+    try:
+        with open("/proc/1/fd/1", "w", encoding="utf-8") as handle:
+            handle.write(f"[camera-test] {message}\n")
+            handle.flush()
+    except OSError:
+        pass
+
+
 def emit(name: str, status: str, detail: Any = None) -> None:
     record = {"test": name, "status": status}
     if detail is not None:
         record["detail"] = detail
     print(json.dumps(record, default=str, sort_keys=True))
+
+    summary = f"{name}: {status}"
+    if name == "login" and isinstance(detail, dict):
+        summary += f" (Ret={detail.get('ret')}, {detail.get('meaning')})"
+    docker_log(summary)
 
 
 async def diagnostic_login(camera: Any) -> dict[str, Any] | None:
@@ -52,6 +67,8 @@ async def main() -> int:
     port = int(os.environ.get("CAMERA_PORT", "34567"))
     username = os.environ["CAMERA_USERNAME"]
     password = os.environ["CAMERA_PASSWORD"]
+
+    docker_log("new test run started")
 
     try:
         with socket.create_connection((host, port), timeout=5):
@@ -99,6 +116,7 @@ async def main() -> int:
                 emit(name, "failed", f"{type(exc).__name__}: {exc}")
                 failures += 1
 
+        docker_log(f"test run completed with {failures} failure(s)")
         return 1 if failures else 0
     finally:
         camera.close()
@@ -108,6 +126,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(asyncio.run(main()))
     except KeyError as exc:
+        docker_log(f"test setup failed: missing environment variable {exc.args[0]}")
         print(
             json.dumps(
                 {
@@ -118,6 +137,7 @@ if __name__ == "__main__":
         )
         raise SystemExit(2)
     except Exception as exc:
+        docker_log(f"test crashed: {type(exc).__name__}")
         print(
             json.dumps(
                 {

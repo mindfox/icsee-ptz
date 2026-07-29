@@ -6,4 +6,4 @@ services:
       - .env
     volumes:
       - ./workspace:/workspace
-    restart: "no"
+    restart: unless-stopped

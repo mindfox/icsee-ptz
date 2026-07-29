@@ -27,6 +27,26 @@ def emit(name: str, status: str, detail: Any = None) -> None:
     print(json.dumps(record, default=str, sort_keys=True))
 
 
+async def diagnostic_login(camera: Any) -> dict[str, Any] | None:
+    await camera.connect()
+    response = await camera.send(
+        1000,
+        {
+            "EncryptType": "MD5",
+            "LoginType": "DVRIP-Web",
+            "PassWord": camera.hash_pass,
+            "UserName": camera.user,
+        },
+    )
+
+    if response is not None and response.get("Ret") in camera.OK_CODES:
+        camera.session = int(response["SessionID"], 16)
+        camera.alive_time = response["AliveInterval"]
+        camera.keep_alive(asyncio.get_running_loop())
+
+    return response
+
+
 async def main() -> int:
     host = os.environ["CAMERA_HOST"]
     port = int(os.environ.get("CAMERA_PORT", "34567"))
@@ -44,11 +64,21 @@ async def main() -> int:
     camera = DVRIPCam(host, port=port, user=username, password=password)
 
     try:
-        logged_in = await camera.login(asyncio.get_running_loop())
-        if not logged_in:
-            emit("login", "failed", "camera rejected login")
+        login_response = await diagnostic_login(camera)
+        if login_response is None:
+            emit("login", "failed", "no response")
             return 1
-        emit("login", "passed")
+
+        login_ret = login_response.get("Ret")
+        login_detail = {
+            "ret": login_ret,
+            "meaning": camera.CODES.get(login_ret, "unknown return code"),
+            "response_keys": sorted(login_response.keys()),
+        }
+        if login_ret not in camera.OK_CODES:
+            emit("login", "failed", login_detail)
+            return 1
+        emit("login", "passed", login_detail)
 
         tests = (
             ("system_info", camera.get_system_info),

@@ -1,0 +1,9 @@
+services:
+  icsee-worker:
+    build:
+      context: .
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/workspace
+    restart: "no"

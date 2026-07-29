@@ -42,6 +42,17 @@ def emit(name: str, status: str, detail: Any = None) -> None:
     docker_log(summary)
 
 
+def normalize_credential(value: str) -> str:
+    normalized = value.strip()
+    if (
+        len(normalized) >= 2
+        and normalized[0] == normalized[-1]
+        and normalized[0] in {"'", '"'}
+    ):
+        normalized = normalized[1:-1]
+    return normalized
+
+
 async def diagnostic_login(camera: Any) -> dict[str, Any] | None:
     await camera.connect()
     response = await camera.send(
@@ -62,6 +73,12 @@ async def diagnostic_login(camera: Any) -> dict[str, Any] | None:
     return response
 
 
+async def try_login(host: str, port: int, username: str, password: str) -> tuple[Any, dict[str, Any] | None]:
+    camera = DVRIPCam(host, port=port, user=username, password=password)
+    response = await diagnostic_login(camera)
+    return camera, response
+
+
 async def main() -> int:
     host = os.environ["CAMERA_HOST"]
     port = int(os.environ.get("CAMERA_PORT", "34567"))
@@ -78,10 +95,31 @@ async def main() -> int:
         emit("tcp_connect", "failed", f"{type(exc).__name__}: {exc}")
         return 1
 
-    camera = DVRIPCam(host, port=port, user=username, password=password)
+    camera = None
+    login_response = None
+    login_variant = "exact"
 
     try:
-        login_response = await diagnostic_login(camera)
+        camera, login_response = await try_login(host, port, username, password)
+
+        login_ret = login_response.get("Ret") if login_response else None
+        normalized_username = normalize_credential(username)
+        normalized_password = normalize_credential(password)
+
+        if (
+            login_ret == 203
+            and (normalized_username != username or normalized_password != password)
+        ):
+            docker_log("exact credentials rejected; retrying normalized .env values")
+            camera.close()
+            camera, login_response = await try_login(
+                host,
+                port,
+                normalized_username,
+                normalized_password,
+            )
+            login_variant = "normalized"
+
         if login_response is None:
             emit("login", "failed", "no response")
             return 1
@@ -91,6 +129,7 @@ async def main() -> int:
             "ret": login_ret,
             "meaning": camera.CODES.get(login_ret, "unknown return code"),
             "response_keys": sorted(login_response.keys()),
+            "credential_variant": login_variant,
         }
         if login_ret not in camera.OK_CODES:
             emit("login", "failed", login_detail)
@@ -119,7 +158,8 @@ async def main() -> int:
         docker_log(f"test run completed with {failures} failure(s)")
         return 1 if failures else 0
     finally:
-        camera.close()
+        if camera is not None:
+            camera.close()
 
 
 if __name__ == "__main__":

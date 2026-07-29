@@ -1,6 +1,36 @@
 #!/bin/sh
 set -eu
 
+POLL_INTERVAL=${POLL_INTERVAL:-60}
+
+case "$POLL_INTERVAL" in
+    ''|*[!0-9]*)
+        echo "POLL_INTERVAL must be a positive integer" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$POLL_INTERVAL" -lt 1 ]; then
+    echo "POLL_INTERVAL must be at least 1 second" >&2
+    exit 2
+fi
+
+# The normal container process stays alive and launches one isolated polling
+# cycle at a time. A failed test or temporary GitHub/network error is logged,
+# then the next cycle still runs.
+if [ "${WORKER_ONCE:-0}" != "1" ]; then
+    echo "Starting icsee lab worker; polling every ${POLL_INTERVAL}s"
+    while true; do
+        if WORKER_ONCE=1 "$0"; then
+            :
+        else
+            status=$?
+            echo "Worker cycle failed with exit code $status; retrying after ${POLL_INTERVAL}s" >&2
+        fi
+        sleep "$POLL_INTERVAL"
+    done
+fi
+
 required_vars="GITHUB_REPOSITORY GITHUB_TOKEN SOURCE_BRANCH RESULTS_BRANCH TEST_SCRIPT CAMERA_HOST CAMERA_PORT CAMERA_USERNAME CAMERA_PASSWORD"
 for name in $required_vars; do
     eval "value=\${$name:-}"

@@ -40,16 +40,11 @@ SNAPSHOT_INTERVAL = max(0.5, float(os.environ.get("SNAPSHOT_INTERVAL", "1.5")))
 ONVIF_TIMEOUT = max(2.0, float(os.environ.get("ONVIF_TIMEOUT", "8")))
 
 VELOCITIES = {
-    "up": (0.0, PTZ_SPEED, 0.0),
-    "down": (0.0, -PTZ_SPEED, 0.0),
-    "left": (-PTZ_SPEED, 0.0, 0.0),
-    "right": (PTZ_SPEED, 0.0, 0.0),
-    "up_left": (-PTZ_SPEED, PTZ_SPEED, 0.0),
-    "up_right": (PTZ_SPEED, PTZ_SPEED, 0.0),
-    "down_left": (-PTZ_SPEED, -PTZ_SPEED, 0.0),
-    "down_right": (PTZ_SPEED, -PTZ_SPEED, 0.0),
-    "zoom_in": (0.0, 0.0, PTZ_SPEED),
-    "zoom_out": (0.0, 0.0, -PTZ_SPEED),
+    "up": (0.0, PTZ_SPEED, 0.0), "down": (0.0, -PTZ_SPEED, 0.0),
+    "left": (-PTZ_SPEED, 0.0, 0.0), "right": (PTZ_SPEED, 0.0, 0.0),
+    "up_left": (-PTZ_SPEED, PTZ_SPEED, 0.0), "up_right": (PTZ_SPEED, PTZ_SPEED, 0.0),
+    "down_left": (-PTZ_SPEED, -PTZ_SPEED, 0.0), "down_right": (PTZ_SPEED, -PTZ_SPEED, 0.0),
+    "zoom_in": (0.0, 0.0, PTZ_SPEED), "zoom_out": (0.0, 0.0, -PTZ_SPEED),
 }
 
 SOAP_NS = "http://www.w3.org/2003/05/soap-envelope"
@@ -93,38 +88,142 @@ async def with_camera(operation):
 
 def soap_post(url: str, action: str, body: str) -> requests.Response:
     response = requests.post(
-        url,
-        data=body.encode("utf-8"),
-        headers={
-            "Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"',
-            "Connection": "close",
-        },
-        auth=AUTH,
-        timeout=ONVIF_TIMEOUT,
+        url, data=body.encode("utf-8"),
+        headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"', "Connection": "close"},
+        auth=AUTH, timeout=ONVIF_TIMEOUT,
     )
     if response.status_code >= 400:
-        detail = response.text.strip().replace("\n", " ")[:500]
+        detail = response.text.strip().replace("\n", " ")[:700]
         raise RuntimeError(f"ONVIF HTTP {response.status_code}: {detail}")
     if b"Fault" in response.content:
-        detail = response.text.strip().replace("\n", " ")[:700]
+        detail = response.text.strip().replace("\n", " ")[:900]
         raise RuntimeError(f"ONVIF SOAP fault: {detail}")
     return response
 
 
-def get_profile_token() -> str:
+def envelope(content: str, namespaces: str = "") -> str:
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="{SOAP_NS}" {namespaces}><s:Body>{content}</s:Body></s:Envelope>'''
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def element_to_data(node: ET.Element):
+    children = list(node)
+    result = {f"@{local_name(k)}": v for k, v in node.attrib.items()}
+    text = (node.text or "").strip()
+    if not children:
+        if result:
+            if text:
+                result["#text"] = text
+            return result
+        return text
+    for child in children:
+        key = local_name(child.tag)
+        value = element_to_data(child)
+        if key in result:
+            if not isinstance(result[key], list):
+                result[key] = [result[key]]
+            result[key].append(value)
+        else:
+            result[key] = value
+    if text:
+        result["#text"] = text
+    return result
+
+
+def get_profile_details() -> dict:
     global profile_token
-    if profile_token:
-        return profile_token
-    body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:trt="{TRT_NS}"><s:Body><trt:GetProfiles/></s:Body></s:Envelope>'''
-    response = soap_post(MEDIA_URL, "http://www.onvif.org/ver10/media/wsdl/GetProfiles", body)
+    body = envelope("<trt:GetProfiles/>", f'xmlns:trt="{TRT_NS}"')
+    response = soap_post(MEDIA_URL, f"{TRT_NS}/GetProfiles", body)
     root = ET.fromstring(response.content)
     profiles = root.findall(f".//{{{TRT_NS}}}Profiles")
-    if not profiles or not profiles[0].attrib.get("token"):
-        raise RuntimeError("ONVIF GetProfiles returned no usable profile")
-    profile_token = profiles[0].attrib["token"]
-    add_log("INFO", f"ONVIF profile selected: {profile_token}")
+    if not profiles:
+        raise RuntimeError("ONVIF GetProfiles returned no profiles")
+    selected = profiles[0]
+    token = selected.attrib.get("token")
+    if not token:
+        raise RuntimeError("ONVIF profile has no token")
+    profile_token = token
+    ptz_config = selected.find(f"{{{TT_NS}}}PTZConfiguration")
+    config_token = ptz_config.attrib.get("token") if ptz_config is not None else None
+    node_token_node = ptz_config.find(f"{{{TT_NS}}}NodeToken") if ptz_config is not None else None
+    return {
+        "token": token,
+        "name": (selected.findtext(f"{{{TT_NS}}}Name") or "").strip(),
+        "ptz_configuration_token": config_token,
+        "ptz_node_token": (node_token_node.text or "").strip() if node_token_node is not None else None,
+        "raw": element_to_data(selected),
+    }
+
+
+def get_profile_token() -> str:
+    global profile_token
+    if not profile_token:
+        details = get_profile_details()
+        add_log("INFO", f"ONVIF profile selected: {details['token']}")
     return profile_token
+
+
+def onvif_diagnostics() -> dict:
+    profile = get_profile_details()
+    config_token = profile.get("ptz_configuration_token")
+    node_token = profile.get("ptz_node_token")
+    if not config_token:
+        raise RuntimeError("selected media profile has no PTZ configuration token")
+
+    cfg_body = envelope(
+        f"<tptz:GetConfiguration><tptz:PTZConfigurationToken>{escape(config_token)}</tptz:PTZConfigurationToken></tptz:GetConfiguration>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    cfg_response = soap_post(PTZ_URL, f"{TPTZ_NS}/GetConfiguration", cfg_body)
+    cfg_root = ET.fromstring(cfg_response.content)
+    cfg_node = cfg_root.find(f".//{{{TPTZ_NS}}}PTZConfiguration")
+    configuration = element_to_data(cfg_node) if cfg_node is not None else element_to_data(cfg_root)
+
+    if not node_token and cfg_node is not None:
+        node_el = cfg_node.find(f"{{{TT_NS}}}NodeToken")
+        node_token = (node_el.text or "").strip() if node_el is not None else None
+    if not node_token:
+        raise RuntimeError("PTZ configuration has no node token")
+
+    node_body = envelope(
+        f"<tptz:GetNode><tptz:NodeToken>{escape(node_token)}</tptz:NodeToken></tptz:GetNode>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    node_response = soap_post(PTZ_URL, f"{TPTZ_NS}/GetNode", node_body)
+    node_root = ET.fromstring(node_response.content)
+    node_el = node_root.find(f".//{{{TPTZ_NS}}}PTZNode")
+    node = element_to_data(node_el) if node_el is not None else element_to_data(node_root)
+
+    options_body = envelope(
+        f"<tptz:GetConfigurationOptions><tptz:ConfigurationToken>{escape(config_token)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    options_response = soap_post(PTZ_URL, f"{TPTZ_NS}/GetConfigurationOptions", options_body)
+    options_root = ET.fromstring(options_response.content)
+    options_el = options_root.find(f".//{{{TPTZ_NS}}}PTZConfigurationOptions")
+    options = element_to_data(options_el) if options_el is not None else element_to_data(options_root)
+
+    status_body = envelope(
+        f"<tptz:GetStatus><tptz:ProfileToken>{escape(profile['token'])}</tptz:ProfileToken></tptz:GetStatus>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    status_response = soap_post(PTZ_URL, f"{TPTZ_NS}/GetStatus", status_body)
+    status_root = ET.fromstring(status_response.content)
+    status_el = status_root.find(f".//{{{TPTZ_NS}}}PTZStatus")
+    status = element_to_data(status_el) if status_el is not None else element_to_data(status_root)
+
+    return {
+        "collected_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "profile": profile,
+        "configuration": configuration,
+        "node": node,
+        "configuration_options": options,
+        "status": status,
+    }
 
 
 def onvif_continuous_move(command: str, pulse_seconds: float) -> dict:
@@ -134,28 +233,28 @@ def onvif_continuous_move(command: str, pulse_seconds: float) -> dict:
         velocity = f'<tt:Zoom x="{zoom:g}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"/>'
     else:
         velocity = f'<tt:PanTilt x="{x:g}" y="{y:g}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"/>'
-    move_body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"><s:Body><tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity>{velocity}</tptz:Velocity></tptz:ContinuousMove></s:Body></s:Envelope>'''
-    stop_body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tptz="{TPTZ_NS}"><s:Body><tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop></s:Body></s:Envelope>'''
-    started = soap_post(PTZ_URL, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove", move_body)
+    move_body = envelope(
+        f"<tptz:ContinuousMove><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:Velocity>{velocity}</tptz:Velocity></tptz:ContinuousMove>",
+        f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"',
+    )
+    stop_body = envelope(
+        f"<tptz:Stop><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    started = soap_post(PTZ_URL, f"{TPTZ_NS}/ContinuousMove", move_body)
     time.sleep(pulse_seconds)
-    stopped = soap_post(PTZ_URL, "http://www.onvif.org/ver20/ptz/wsdl/Stop", stop_body)
-    return {
-        "start_status": started.status_code,
-        "stop_status": stopped.status_code,
-        "profile_token": token,
-        "velocity": {"x": x, "y": y, "zoom": zoom},
-        "pulse_seconds": pulse_seconds,
-    }
+    stopped = soap_post(PTZ_URL, f"{TPTZ_NS}/Stop", stop_body)
+    return {"start_status": started.status_code, "stop_status": stopped.status_code, "profile_token": token,
+            "velocity": {"x": x, "y": y, "zoom": zoom}, "pulse_seconds": pulse_seconds}
 
 
 def onvif_get_presets() -> list[dict]:
     token = get_profile_token()
-    body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tptz="{TPTZ_NS}"><s:Body><tptz:GetPresets><tptz:ProfileToken>{token}</tptz:ProfileToken></tptz:GetPresets></s:Body></s:Envelope>'''
-    response = soap_post(PTZ_URL, "http://www.onvif.org/ver20/ptz/wsdl/GetPresets", body)
-    root = ET.fromstring(response.content)
+    body = envelope(
+        f"<tptz:GetPresets><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken></tptz:GetPresets>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    root = ET.fromstring(soap_post(PTZ_URL, f"{TPTZ_NS}/GetPresets", body).content)
     presets = []
     for item in root.findall(f".//{{{TPTZ_NS}}}Preset"):
         preset_token = item.attrib.get("token", "")
@@ -168,32 +267,32 @@ def onvif_get_presets() -> list[dict]:
 
 def onvif_set_preset(name: str, preset_token: str) -> dict:
     profile = get_profile_token()
-    safe_token = escape(preset_token)
     name_xml = f"<tptz:PresetName>{escape(name)}</tptz:PresetName>" if name else ""
-    body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tptz="{TPTZ_NS}"><s:Body><tptz:SetPreset><tptz:ProfileToken>{profile}</tptz:ProfileToken>{name_xml}<tptz:PresetToken>{safe_token}</tptz:PresetToken></tptz:SetPreset></s:Body></s:Envelope>'''
-    response = soap_post(PTZ_URL, "http://www.onvif.org/ver20/ptz/wsdl/SetPreset", body)
+    body = envelope(
+        f"<tptz:SetPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken>{name_xml}<tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken></tptz:SetPreset>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    response = soap_post(PTZ_URL, f"{TPTZ_NS}/SetPreset", body)
     root = ET.fromstring(response.content)
     token_node = root.find(f".//{{{TPTZ_NS}}}PresetToken")
-    returned_token = token_node.text if token_node is not None else None
-    return {"status": response.status_code, "requested_token": preset_token, "preset_token": returned_token, "name": name}
+    return {"status": response.status_code, "requested_token": preset_token,
+            "preset_token": token_node.text if token_node is not None else None, "name": name}
 
 
 def onvif_goto_preset(preset_token: str) -> dict:
     profile = get_profile_token()
-    safe_token = escape(preset_token)
-    body = f'''<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tptz="{TPTZ_NS}"><s:Body><tptz:GotoPreset><tptz:ProfileToken>{profile}</tptz:ProfileToken><tptz:PresetToken>{safe_token}</tptz:PresetToken></tptz:GotoPreset></s:Body></s:Envelope>'''
-    response = soap_post(PTZ_URL, "http://www.onvif.org/ver20/ptz/wsdl/GotoPreset", body)
+    body = envelope(
+        f"<tptz:GotoPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken><tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken></tptz:GotoPreset>",
+        f'xmlns:tptz="{TPTZ_NS}"',
+    )
+    response = soap_post(PTZ_URL, f"{TPTZ_NS}/GotoPreset", body)
     return {"status": response.status_code, "preset_token": preset_token}
 
 
 def capture_snapshot_once() -> None:
     global latest_snapshot, latest_snapshot_sequence, latest_snapshot_time, snapshot_error
-
     async def operation(camera):
         return await camera.snapshot(channel=0)
-
     try:
         with camera_lock:
             jpeg = run(with_camera(operation))
@@ -235,7 +334,7 @@ def index():
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>iCSee PTZ Lab</title>
 <style>
-:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:18px}}main{{max-width:1180px;margin:auto}}.panel{{background:#1d1d1d;border:1px solid #333;border-radius:12px;padding:14px;margin-bottom:14px}}h1,h2{{margin:0 0 10px}}.small{{font-size:13px;color:#aaa;margin:0 0 12px}}.camera-row{{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:14px;align-items:start}}.feed-wrap{{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:260px}}.feed-wrap img{{display:none;width:100%;max-height:68vh;object-fit:contain;background:#000}}.feed-badge{{position:absolute;left:8px;bottom:8px;background:#000b;padding:4px 7px;border-radius:5px;font:12px ui-monospace,monospace}}.controls{{display:flex;flex-direction:column;gap:10px}}.grid{{display:grid;grid-template-columns:repeat(3,58px);gap:7px;justify-content:center}}.zoom,.preset-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}button{{font-size:20px;min-height:48px;border:1px solid #444;border-radius:8px;background:#333;color:#fff;cursor:pointer;padding:5px 9px}}button:hover{{background:#444}}button:active{{background:#666}}button:disabled{{opacity:.45;cursor:not-allowed}}.zoom button,.restart,.preset-actions button,.feed-toggle,.save-preset{{font-size:13px;min-height:40px}}.step-box,.preset-box{{display:flex;flex-direction:column;gap:7px;background:#272727;border:1px solid #444;border-radius:8px;padding:8px 10px;font-size:13px}}.step-row{{display:flex;align-items:center;justify-content:space-between;gap:10px}}.step-box input{{width:72px;font-size:16px;padding:5px 4px;text-align:center}}.preset-box input,.preset-box select{{width:100%;font-size:13px;padding:7px}}.restart{{background:#633}}.restart:hover{{background:#844}}.console{{height:280px;overflow:auto;background:#080808;border:1px solid #333;border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;color:#c9f7d2}}.console .error{{color:#ff9d9d}}.console .warning{{color:#ffd27d}}.status{{font:12px ui-monospace,monospace;color:#b8f7c5;min-height:34px;white-space:pre-wrap;word-break:break-word}}.footer-row{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}}.footer-row h2{{margin:0}}.footer-row button{{font-size:12px;min-height:32px}}@media(max-width:760px){{.camera-row{{grid-template-columns:1fr}}.controls{{max-width:300px;margin:auto;width:100%}}.feed-wrap{{min-height:190px}}}}
+:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:18px}}main{{max-width:1180px;margin:auto}}.panel{{background:#1d1d1d;border:1px solid #333;border-radius:12px;padding:14px;margin-bottom:14px}}h1,h2{{margin:0 0 10px}}.small{{font-size:13px;color:#aaa;margin:0 0 12px}}.camera-row{{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:14px;align-items:start}}.feed-wrap{{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:260px}}.feed-wrap img{{display:none;width:100%;max-height:68vh;object-fit:contain;background:#000}}.feed-badge{{position:absolute;left:8px;bottom:8px;background:#000b;padding:4px 7px;border-radius:5px;font:12px ui-monospace,monospace}}.controls{{display:flex;flex-direction:column;gap:10px}}.grid{{display:grid;grid-template-columns:repeat(3,58px);gap:7px;justify-content:center}}.zoom,.preset-actions{{display:grid;grid-template-columns:1fr 1fr;gap:7px}}button{{font-size:20px;min-height:48px;border:1px solid #444;border-radius:8px;background:#333;color:#fff;cursor:pointer;padding:5px 9px}}button:hover{{background:#444}}button:active{{background:#666}}button:disabled{{opacity:.45;cursor:not-allowed}}.zoom button,.restart,.preset-actions button,.feed-toggle,.save-preset,.diag-button,.tab-button{{font-size:13px;min-height:40px}}.step-box,.preset-box{{display:flex;flex-direction:column;gap:7px;background:#272727;border:1px solid #444;border-radius:8px;padding:8px 10px;font-size:13px}}.step-row{{display:flex;align-items:center;justify-content:space-between;gap:10px}}.step-box input{{width:72px;font-size:16px;padding:5px 4px;text-align:center}}.preset-box input,.preset-box select{{width:100%;font-size:13px;padding:7px}}.restart{{background:#633}}.restart:hover{{background:#844}}.tabs{{display:flex;gap:6px;border-bottom:1px solid #444;margin-bottom:10px}}.tab-button{{border-radius:7px 7px 0 0;border-bottom:0;background:#292929}}.tab-button.active{{background:#444}}.tab-panel{{display:none}}.tab-panel.active{{display:block}}.console{{height:300px;overflow:auto;background:#080808;border:1px solid #333;border-radius:8px;padding:10px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word;color:#c9f7d2}}.console .error{{color:#ff9d9d}}.console .warning{{color:#ffd27d}}.diagnostics{{min-height:300px;max-height:560px;overflow:auto;background:#141414;border:1px solid #333;border-radius:8px;padding:10px}}.diag-toolbar{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}}.diag-section{{border:1px solid #3a3a3a;border-radius:8px;margin-bottom:10px;overflow:hidden}}.diag-section h3{{margin:0;padding:9px 10px;background:#292929;font-size:14px}}.diag-grid{{display:grid;grid-template-columns:minmax(180px,34%) 1fr}}.diag-key,.diag-value{{padding:7px 9px;border-top:1px solid #303030;font:12px/1.4 ui-monospace,monospace;word-break:break-word}}.diag-key{{color:#bbb;background:#1a1a1a}}.diag-empty{{color:#999;padding:20px;text-align:center}}.status{{font:12px ui-monospace,monospace;color:#b8f7c5;min-height:34px;white-space:pre-wrap;word-break:break-word}}.footer-row{{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:8px}}.footer-row h2{{margin:0}}.footer-row button{{font-size:12px;min-height:32px}}@media(max-width:760px){{.camera-row{{grid-template-columns:1fr}}.controls{{max-width:300px;margin:auto;width:100%}}.feed-wrap{{min-height:190px}}.diag-grid{{grid-template-columns:1fr}}}}
 </style></head><body><main>
 <div class="panel"><h1>iCSee PTZ Lab</h1><p class="small">Feed is disabled by default. PTZ and saved positions use ONVIF.</p>
 <div class="camera-row"><div class="feed-wrap"><img id="view" alt="Camera snapshot"><div id="feedBadge" class="feed-badge">Feed disabled</div></div>
@@ -244,9 +343,11 @@ def index():
 <label class="step-box" for="ptzStep"><span class="step-row"><span>Movement step</span><input id="ptzStep" type="number" min="1" max="10" step="1" value="{DEFAULT_PTZ_STEP}" title="Use Up/Down keys or the spinner arrows"></span><span class="small">Step 1 = {PTZ_STEP_SECONDS:g}s pulse</span></label>
 <div class="preset-box"><strong>Saved positions</strong><span class="small">Refresh manually. Select an existing preset token, optionally edit its name, then save the current camera position back to that same preset.</span><select id="presetSelect"><option value="">Press Refresh list to load presets</option></select><input id="presetName" maxlength="40" placeholder="Preset name" disabled><button id="savePreset" class="save-preset" disabled>Save current position</button><div class="preset-actions"><button id="reloadPresets">Refresh list</button><button id="gotoPreset">Go to selected</button></div></div>
 <div id="status" class="status">Ready</div><button id="restart" class="restart">Restart web service</button></div></div></div>
-<div class="panel"><div class="footer-row"><h2>Console</h2><button id="clearConsole">Clear view</button></div><div id="console" class="console">Loading logs…</div></div>
+<div class="panel"><div class="tabs"><button class="tab-button active" data-tab="consoleTab">Console log</button><button class="tab-button" data-tab="diagnosticsTab">Camera diagnostics</button></div>
+<div id="consoleTab" class="tab-panel active"><div class="footer-row"><h2>Console</h2><button id="clearConsole">Clear view</button></div><div id="console" class="console">Loading logs…</div></div>
+<div id="diagnosticsTab" class="tab-panel"><div class="diag-toolbar"><div><h2>Camera diagnostics</h2><div id="diagTime" class="small">Not collected yet</div></div><button id="runDiagnostics" class="diag-button">Run read-only diagnostics</button></div><div id="diagnostics" class="diagnostics"><div class="diag-empty">Run diagnostics to query the camera's PTZ profile, configuration, node, supported spaces, ranges, and current status.</div></div></div></div>
 </main><script>
-const image=document.getElementById('view'),status=document.getElementById('status'),consoleBox=document.getElementById('console'),badge=document.getElementById('feedBadge'),feedToggle=document.getElementById('feedToggle'),stepInput=document.getElementById('ptzStep'),presetSelect=document.getElementById('presetSelect'),presetName=document.getElementById('presetName'),savePresetButton=document.getElementById('savePreset');let shownSequence=-1,clearedBefore=0,renderedLogCount=-1,feedEnabled=false;const savedStep=localStorage.getItem('ptzStep');if(savedStep)stepInput.value=savedStep;function normalizedStep(){{const value=Math.max(1,Math.min(10,parseInt(stepInput.value||'{DEFAULT_PTZ_STEP}',10)));stepInput.value=value;localStorage.setItem('ptzStep',value);return value}}stepInput.addEventListener('change',normalizedStep);stepInput.addEventListener('input',()=>{{if(stepInput.value!=='')localStorage.setItem('ptzStep',stepInput.value)}});
+const image=document.getElementById('view'),status=document.getElementById('status'),consoleBox=document.getElementById('console'),badge=document.getElementById('feedBadge'),feedToggle=document.getElementById('feedToggle'),stepInput=document.getElementById('ptzStep'),presetSelect=document.getElementById('presetSelect'),presetName=document.getElementById('presetName'),savePresetButton=document.getElementById('savePreset'),diagnosticsBox=document.getElementById('diagnostics'),diagTime=document.getElementById('diagTime'),runDiagnosticsButton=document.getElementById('runDiagnostics');let shownSequence=-1,clearedBefore=0,renderedLogCount=-1,feedEnabled=false;const savedStep=localStorage.getItem('ptzStep');if(savedStep)stepInput.value=savedStep;function normalizedStep(){{const value=Math.max(1,Math.min(10,parseInt(stepInput.value||'{DEFAULT_PTZ_STEP}',10)));stepInput.value=value;localStorage.setItem('ptzStep',value);return value}}stepInput.addEventListener('change',normalizedStep);stepInput.addEventListener('input',()=>{{if(stepInput.value!=='')localStorage.setItem('ptzStep',stepInput.value)}});
 function refreshImage(force=false){{if(!feedEnabled)return;fetch('/api/snapshot-status',{{cache:'no-store'}}).then(r=>r.json()).then(s=>{{badge.textContent=s.error?('Snapshot error: '+s.error):(s.sequence?('Snapshot #'+s.sequence+' • '+s.age_seconds.toFixed(1)+'s old'):'Waiting for snapshot…');if(s.sequence&&(force||s.sequence!==shownSequence)){{shownSequence=s.sequence;image.src='/snapshot.jpg?sequence='+s.sequence+'&t='+Date.now()}}}}).catch(e=>badge.textContent='Status error: '+e)}}
 async function setFeed(enabled){{try{{const r=await fetch('/api/feed',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{enabled}})}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);feedEnabled=j.enabled;feedToggle.textContent=feedEnabled?'Disable web feed':'Enable web feed';image.style.display=feedEnabled?'block':'none';badge.textContent=feedEnabled?'Waiting for snapshot…':'Feed disabled';if(feedEnabled)refreshImage(true);else image.removeAttribute('src');status.textContent='Web feed '+(feedEnabled?'enabled':'disabled')}}catch(e){{status.textContent='Feed toggle failed: '+e}}finally{{loadLogs()}}}}
 async function move(cmd){{const step=normalizedStep();status.textContent='Sending '+cmd+' at step '+step+'…';try{{const r=await fetch('/api/ptz',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command:cmd,step}})}}),j=await r.json();status.textContent=(r.ok?'Completed: ':'Failed: ')+JSON.stringify(j);if(feedEnabled)setTimeout(()=>refreshImage(true),250)}}catch(e){{status.textContent='Request failed: '+e}}finally{{loadLogs()}}}}
@@ -254,9 +355,12 @@ function syncPresetSelection(){{const option=presetSelect.options[presetSelect.s
 async function loadPresets(){{presetSelect.innerHTML='<option value="">Loading presets…</option>';presetName.value='';presetName.disabled=true;savePresetButton.disabled=true;try{{const r=await fetch('/api/presets',{{cache:'no-store'}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);presetSelect.innerHTML='<option value="">Select a saved position</option>';for(const p of j.presets){{const o=document.createElement('option');o.value=p.token;o.dataset.name=p.name||'';o.textContent=(p.name||'(unnamed)')+' ['+p.token+']';presetSelect.appendChild(o)}}if(!j.presets.length)presetSelect.innerHTML='<option value="">No saved positions</option>';status.textContent='Preset list refreshed manually'}}catch(e){{presetSelect.innerHTML='<option value="">Unable to load presets</option>';status.textContent='Preset list failed: '+e}}finally{{loadLogs()}}}}
 async function savePreset(){{const token=presetSelect.value,name=presetName.value.trim();if(!token){{status.textContent='Select a saved position first';return}}status.textContent='Saving current position to preset '+token+'…';savePresetButton.disabled=true;try{{const r=await fetch('/api/presets/'+encodeURIComponent(token),{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name}})}}),j=await r.json();status.textContent=(r.ok?'Saved: ':'Failed: ')+JSON.stringify(j);if(r.ok){{const option=presetSelect.options[presetSelect.selectedIndex];option.dataset.name=name;option.textContent=(name||'(unnamed)')+' ['+token+']'}}}}catch(e){{status.textContent='Save failed: '+e}}finally{{savePresetButton.disabled=!presetSelect.value;loadLogs()}}}}
 async function gotoPreset(){{const token=presetSelect.value;if(!token){{status.textContent='Select a saved position first';return}}status.textContent='Moving to saved position…';try{{const r=await fetch('/api/presets/'+encodeURIComponent(token)+'/goto',{{method:'POST'}}),j=await r.json();status.textContent=(r.ok?'Moving: ':'Failed: ')+JSON.stringify(j)}}catch(e){{status.textContent='Preset move failed: '+e}}finally{{loadLogs()}}}}
+function flatten(value,prefix='',rows=[]){{if(value===null||value===undefined||typeof value!=='object'){{rows.push([prefix||'value',value===null?'null':String(value??'')]);return rows}}if(Array.isArray(value)){{value.forEach((v,i)=>flatten(v,prefix+'['+i+']',rows));return rows}}const entries=Object.entries(value);if(!entries.length)rows.push([prefix||'value','{{}}']);else entries.forEach(([k,v])=>flatten(v,prefix?prefix+'.'+k:k,rows));return rows}}
+function renderDiagnostics(data){{diagnosticsBox.innerHTML='';for(const [section,value] of Object.entries(data)){{if(section==='collected_at')continue;const box=document.createElement('section');box.className='diag-section';const title=document.createElement('h3');title.textContent=section.replaceAll('_',' ');box.appendChild(title);const grid=document.createElement('div');grid.className='diag-grid';for(const [key,val] of flatten(value)){{const k=document.createElement('div'),v=document.createElement('div');k.className='diag-key';v.className='diag-value';k.textContent=key;v.textContent=val;grid.append(k,v)}}box.appendChild(grid);diagnosticsBox.appendChild(box)}}diagTime.textContent='Collected '+data.collected_at}}
+async function runDiagnostics(){{runDiagnosticsButton.disabled=true;diagnosticsBox.innerHTML='<div class="diag-empty">Querying camera…</div>';status.textContent='Running read-only ONVIF diagnostics…';try{{const r=await fetch('/api/diagnostics',{{method:'POST'}}),j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);renderDiagnostics(j);status.textContent='Diagnostics completed'}}catch(e){{diagnosticsBox.innerHTML='';const d=document.createElement('div');d.className='diag-empty';d.textContent='Diagnostics failed: '+e;diagnosticsBox.appendChild(d);status.textContent='Diagnostics failed: '+e}}finally{{runDiagnosticsButton.disabled=false;loadLogs()}}}}
 async function loadLogs(){{try{{const r=await fetch('/api/logs',{{cache:'no-store'}}),j=await r.json(),entries=j.entries.slice(clearedBefore);if(entries.length===renderedLogCount)return;const selection=window.getSelection();if(selection&&!selection.isCollapsed)return;const nearBottom=consoleBox.scrollHeight-consoleBox.scrollTop-consoleBox.clientHeight<24;consoleBox.innerHTML='';for(const e of entries){{const line=document.createElement('div');line.className=e.level.toLowerCase();line.textContent=`${{e.timestamp}} [${{e.level}}] ${{e.message}}`;consoleBox.appendChild(line)}}renderedLogCount=entries.length;if(nearBottom)consoleBox.scrollTop=consoleBox.scrollHeight}}catch(e){{consoleBox.textContent='Unable to load logs: '+e}}}}
 async function restartService(){{status.textContent='Restart requested. Reconnecting…';try{{await fetch('/api/restart',{{method:'POST'}})}}catch(e){{}}setTimeout(()=>location.reload(),2200)}}
-feedToggle.onclick=()=>setFeed(!feedEnabled);document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>move(b.dataset.cmd));document.getElementById('refresh').onclick=()=>refreshImage(true);presetSelect.onchange=syncPresetSelection;savePresetButton.onclick=savePreset;document.getElementById('reloadPresets').onclick=loadPresets;document.getElementById('gotoPreset').onclick=gotoPreset;document.getElementById('restart').onclick=restartService;document.getElementById('clearConsole').onclick=()=>fetch('/api/logs',{{cache:'no-store'}}).then(r=>r.json()).then(j=>{{clearedBefore=j.entries.length;renderedLogCount=0;consoleBox.textContent=''}});image.onerror=()=>status.textContent='Snapshot image failed to load; see console';loadLogs();setInterval(refreshImage,500);setInterval(loadLogs,1000);
+document.querySelectorAll('.tab-button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('.tab-button,.tab-panel').forEach(e=>e.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});feedToggle.onclick=()=>setFeed(!feedEnabled);document.querySelectorAll('[data-cmd]').forEach(b=>b.onclick=()=>move(b.dataset.cmd));document.getElementById('refresh').onclick=()=>refreshImage(true);presetSelect.onchange=syncPresetSelection;savePresetButton.onclick=savePreset;document.getElementById('reloadPresets').onclick=loadPresets;document.getElementById('gotoPreset').onclick=gotoPreset;runDiagnosticsButton.onclick=runDiagnostics;document.getElementById('restart').onclick=restartService;document.getElementById('clearConsole').onclick=()=>fetch('/api/logs',{{cache:'no-store'}}).then(r=>r.json()).then(j=>{{clearedBefore=j.entries.length;renderedLogCount=0;consoleBox.textContent=''}});image.onerror=()=>status.textContent='Snapshot image failed to load; see console';loadLogs();setInterval(refreshImage,500);setInterval(loadLogs,1000);
 </script></body></html>'''
 
 
@@ -305,16 +409,26 @@ def ptz():
     pulse_seconds = PTZ_STEP_SECONDS * step
     x, y, zoom = VELOCITIES[name]
     add_log("INFO", f"ONVIF PTZ request: command={name} step={step} velocity=({x:g},{y:g},{zoom:g}) duration={pulse_seconds:g}s")
-    started = time.monotonic()
     try:
         with onvif_lock:
             result = onvif_continuous_move(name, pulse_seconds)
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        add_log("INFO", f"ONVIF PTZ response in {elapsed_ms} ms: {result!r}")
+        add_log("INFO", f"ONVIF PTZ response: {result!r}")
         return jsonify(command=name, backend="onvif", step=step, pulse_seconds=pulse_seconds, result=result)
     except Exception as exc:
-        app.logger.exception("ONVIF PTZ command failed")
         add_log("ERROR", f"ONVIF PTZ command failed: {type(exc).__name__}: {exc}")
+        return jsonify(error=f"{type(exc).__name__}: {exc}"), 502
+
+
+@app.post("/api/diagnostics")
+def diagnostics():
+    add_log("INFO", "Read-only ONVIF PTZ diagnostics requested manually from UI")
+    try:
+        with onvif_lock:
+            result = onvif_diagnostics()
+        add_log("INFO", "Read-only ONVIF PTZ diagnostics completed")
+        return jsonify(result)
+    except Exception as exc:
+        add_log("ERROR", f"ONVIF PTZ diagnostics failed: {type(exc).__name__}: {exc}")
         return jsonify(error=f"{type(exc).__name__}: {exc}"), 502
 
 
@@ -340,7 +454,6 @@ def presets_save(preset_token):
         with onvif_lock:
             existing = onvif_get_presets()
             if not any(str(item.get("token")) == preset_token for item in existing):
-                add_log("WARNING", f"Rejected SetPreset because token {preset_token!r} was not returned by GetPresets")
                 return jsonify(error="selected preset no longer exists; refresh the list"), 409
             result = onvif_set_preset(name, preset_token)
         add_log("INFO", f"ONVIF SetPreset response: {result!r}")

@@ -29,6 +29,7 @@ PORT = int(os.environ.get("CAMERA_PORT", "34567"))
 USERNAME = os.environ["CAMERA_USERNAME"]
 PASSWORD = os.environ["CAMERA_PASSWORD"]
 DEFAULT_STEP = int(os.environ.get("PTZ_STEP", "2"))
+PTZ_PULSE_SECONDS = max(0.1, min(float(os.environ.get("PTZ_PULSE_SECONDS", "0.4")), 2.0))
 SNAPSHOT_INTERVAL = max(0.5, float(os.environ.get("SNAPSHOT_INTERVAL", "1.5")))
 
 COMMANDS = {
@@ -181,18 +182,42 @@ def ptz():
         return jsonify(error="step must be an integer"), 400
     step = max(1, min(step, 8))
     dvrip_command = COMMANDS[name]
-    add_log("INFO", f"PTZ request: ui={name} dvrip={dvrip_command} step={step}")
+    add_log(
+        "INFO",
+        f"PTZ pulse request: ui={name} dvrip={dvrip_command} step={step} duration={PTZ_PULSE_SECONDS:g}s",
+    )
 
     async def operation(camera):
-        return await camera.ptz(dvrip_command, step=step, ch=0)
+        start_response = await camera.ptz(dvrip_command, step=step, ch=0)
+        await asyncio.sleep(PTZ_PULSE_SECONDS)
+        stop_parameter = {
+            "AUX": {"Number": 0, "Status": "On"},
+            "Channel": 0,
+            "MenuOpts": "Enter",
+            "Pattern": "Stop",
+            "Preset": -1,
+            "Step": step,
+            "Tour": 0,
+        }
+        stop_response = await camera.set_command(
+            "OPPTZControl",
+            {"Command": dvrip_command, "Parameter": stop_parameter},
+        )
+        return {"start": start_response, "stop": stop_response}
 
     started = time.monotonic()
     try:
         with camera_lock:
             result = run(with_camera(operation))
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        add_log("INFO", f"PTZ response in {elapsed_ms} ms: {result!r}")
-        return jsonify(command=name, dvrip_command=dvrip_command, step=step, result=result)
+        add_log("INFO", f"PTZ pulse response in {elapsed_ms} ms: {result!r}")
+        return jsonify(
+            command=name,
+            dvrip_command=dvrip_command,
+            step=step,
+            pulse_seconds=PTZ_PULSE_SECONDS,
+            result=result,
+        )
     except Exception as exc:
         app.logger.exception("PTZ command failed")
         add_log("ERROR", f"PTZ command failed: {type(exc).__name__}: {exc}")

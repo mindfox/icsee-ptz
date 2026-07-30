@@ -29,6 +29,8 @@
           <button id="savePreset" disabled>Save current position</button>
           <div class="two"><input id="presetSpeedX" type="number" min="1" max="8" value="1"><input id="presetSpeedY" type="number" min="1" max="8" value="1"></div>
           <div class="two"><button id="reloadPresets">Refresh list</button><button id="gotoPreset">Go to selected</button></div>
+          <div class="evidence-toolbar"><strong>Latest preset evidence</strong><button id="copyPresetEvidence" disabled>Copy</button></div>
+          <textarea id="presetEvidence" class="evidence" readonly placeholder="Press Refresh list to collect preset evidence."></textarea>
         </div>
         <div id="status" class="status">Ready</div>
         <button id="restart" class="danger">Restart web service</button>
@@ -38,7 +40,7 @@
   <section class="panel">
     <div class="tabs"><button class="tab active" data-tab="consoleTab">Console log</button><button class="tab" data-tab="diagnosticsTab">Camera diagnostics</button></div>
     <div id="consoleTab" class="tab-panel active"><button id="clearConsole">Clear view</button><div id="console" class="console">Loading logs…</div></div>
-    <div id="diagnosticsTab" class="tab-panel"><button id="runDiagnostics">Run read-only diagnostics</button><div id="diagTime" class="small">Not collected yet</div><pre id="diagnostics" class="console">Run diagnostics to query the camera.</pre></div>
+    <div id="diagnosticsTab" class="tab-panel"><div class="diagnostics-toolbar"><div id="diagTime" class="small">Not collected yet</div><button id="runDiagnostics">Run read-only diagnostics</button></div><pre id="diagnostics" class="console">Run diagnostics to query the camera.</pre></div>
   </section>
 </main>
 <script src="{{ url_for('static', filename='app.js') }}"></script>

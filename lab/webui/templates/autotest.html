@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Frigate ONVIF Compatibility Test</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<main>
+  <section class="panel">
+    <div class="diagnostics-toolbar">
+      <div>
+        <h1>Frigate ONVIF Compatibility Test</h1>
+        <p class="small">Automated suite: capabilities, advertised generic RelativeMove, forced FOV RelativeMove, MoveStatus, Stop, and snapshot hashes.</p>
+      </div>
+      <a href="/">Back to PTZ controls</a>
+    </div>
+    <div class="box">
+      <strong>Safety</strong>
+      <p class="small">The suite performs small horizontal movements and attempts to return after each test. Keep the camera clear of obstructions.</p>
+      <label><input id="confirm" type="checkbox"> I confirm this is the spare test camera and movement is safe.</label>
+      <button id="run" disabled>Run complete compatibility suite</button>
+      <div id="state" class="status">Ready</div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="evidence-toolbar"><strong>Complete result</strong><button id="copy" disabled>Copy result</button></div>
+    <textarea id="result" class="evidence autotest-output" readonly placeholder="The complete JSON report will appear here."></textarea>
+  </section>
+</main>
+<script src="{{ url_for('static', filename='autotest.js') }}"></script>
+</body>
+</html>

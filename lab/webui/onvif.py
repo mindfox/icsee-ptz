@@ -11,6 +11,9 @@ TRT_NS = "http://www.onvif.org/ver10/media/wsdl"
 TPTZ_NS = "http://www.onvif.org/ver20/ptz/wsdl"
 TT_NS = "http://www.onvif.org/ver10/schema"
 PRESET_SPEED_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace"
+GENERIC_TRANSLATION_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationGenericSpace"
+FOV_TRANSLATION_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov"
+VELOCITY_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"
 
 
 def local_name(tag: str) -> str:
@@ -111,6 +114,45 @@ class OnvifClient:
             self.log("INFO", f"ONVIF profile selected: {details['token']}")
         return self.profile_token
 
+    def get_status(self) -> dict:
+        token = self.get_profile_token()
+        root = self.query_ptz("GetStatus", f"<tptz:GetStatus><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken></tptz:GetStatus>")
+        status_el = root.find(f".//{{{TPTZ_NS}}}PTZStatus")
+        return element_to_data(status_el) if status_el is not None else element_to_data(root)
+
+    def stop(self) -> dict:
+        token = self.get_profile_token()
+        body = self.envelope(
+            f"<tptz:Stop><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>",
+            f'xmlns:tptz="{TPTZ_NS}"',
+        )
+        response = self.soap_post(self.ptz_url, f"{TPTZ_NS}/Stop", body)
+        return {"status": response.status_code, "profile_token": token}
+
+    def relative_move(self, x: float, y: float, space: str, speed: float = 1.0) -> dict:
+        token = self.get_profile_token()
+        body = self.envelope(
+            f'<tptz:RelativeMove><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken>'
+            f'<tptz:Translation><tt:PanTilt x="{x:g}" y="{y:g}" space="{escape(space)}"/></tptz:Translation>'
+            f'<tptz:Speed><tt:PanTilt x="{speed:g}" y="{speed:g}" space="{PRESET_SPEED_SPACE}"/></tptz:Speed>'
+            f'</tptz:RelativeMove>',
+            f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"',
+        )
+        started = time.monotonic()
+        response = self.soap_post(self.ptz_url, f"{TPTZ_NS}/RelativeMove", body)
+        return {"status": response.status_code, "profile_token": token, "translation": {"x": x, "y": y, "space": space}, "speed": speed, "elapsed_ms": round((time.monotonic() - started) * 1000, 1)}
+
+    def begin_continuous_move(self, x: float, y: float) -> dict:
+        token = self.get_profile_token()
+        body = self.envelope(
+            f'<tptz:ContinuousMove><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken>'
+            f'<tptz:Velocity><tt:PanTilt x="{x:g}" y="{y:g}" space="{VELOCITY_SPACE}"/></tptz:Velocity>'
+            f'</tptz:ContinuousMove>',
+            f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"',
+        )
+        response = self.soap_post(self.ptz_url, f"{TPTZ_NS}/ContinuousMove", body)
+        return {"status": response.status_code, "profile_token": token, "velocity": {"x": x, "y": y, "space": VELOCITY_SPACE}}
+
     def diagnostics(self) -> dict:
         profile = self.get_profile_details()
         config_token = profile.get("ptz_configuration_token")
@@ -131,9 +173,6 @@ class OnvifClient:
         options_root = self.query_ptz("GetConfigurationOptions", f"<tptz:GetConfigurationOptions><tptz:ConfigurationToken>{escape(config_token)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>")
         options_el = options_root.find(f".//{{{TPTZ_NS}}}PTZConfigurationOptions")
         options = element_to_data(options_el) if options_el is not None else element_to_data(options_root)
-        status_root = self.query_ptz("GetStatus", f"<tptz:GetStatus><tptz:ProfileToken>{escape(profile['token'])}</tptz:ProfileToken></tptz:GetStatus>")
-        status_el = status_root.find(f".//{{{TPTZ_NS}}}PTZStatus")
-        status = element_to_data(status_el) if status_el is not None else element_to_data(status_root)
         return {
             "collected_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
             "sources": {"profile": "GetProfiles", "configuration": "GetConfiguration", "node": "GetNode", "configuration_options": "GetConfigurationOptions", "status": "GetStatus"},
@@ -141,19 +180,18 @@ class OnvifClient:
             "configuration": configuration,
             "node": node,
             "configuration_options": options,
-            "status": status,
+            "status": self.get_status(),
         }
 
     def continuous_move(self, command: str, pulse_seconds: float, velocity: tuple[float, float, float]) -> dict:
         x, y, zoom = velocity
         token = self.get_profile_token()
-        velocity_xml = f'<tt:Zoom x="{zoom:g}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"/>' if command.startswith("zoom_") else f'<tt:PanTilt x="{x:g}" y="{y:g}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"/>'
+        velocity_xml = f'<tt:Zoom x="{zoom:g}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"/>' if command.startswith("zoom_") else f'<tt:PanTilt x="{x:g}" y="{y:g}" space="{VELOCITY_SPACE}"/>'
         move_body = self.envelope(f"<tptz:ContinuousMove><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:Velocity>{velocity_xml}</tptz:Velocity></tptz:ContinuousMove>", f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"')
-        stop_body = self.envelope(f"<tptz:Stop><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>", f'xmlns:tptz="{TPTZ_NS}"')
         started = self.soap_post(self.ptz_url, f"{TPTZ_NS}/ContinuousMove", move_body)
         time.sleep(pulse_seconds)
-        stopped = self.soap_post(self.ptz_url, f"{TPTZ_NS}/Stop", stop_body)
-        return {"start_status": started.status_code, "stop_status": stopped.status_code, "profile_token": token, "velocity": {"x": x, "y": y, "zoom": zoom}, "pulse_seconds": pulse_seconds}
+        stopped = self.stop()
+        return {"start_status": started.status_code, "stop_status": stopped["status"], "profile_token": token, "velocity": {"x": x, "y": y, "zoom": zoom}, "pulse_seconds": pulse_seconds}
 
     def get_presets(self) -> list[dict]:
         token = self.get_profile_token()
@@ -171,15 +209,8 @@ class OnvifClient:
                     "token": preset_token,
                     "name": preset_name,
                     "position": {
-                        "pan_tilt": {
-                            "x": pan_tilt.attrib.get("x") if pan_tilt is not None else None,
-                            "y": pan_tilt.attrib.get("y") if pan_tilt is not None else None,
-                            "space": pan_tilt.attrib.get("space") if pan_tilt is not None else None,
-                        },
-                        "zoom": {
-                            "x": zoom.attrib.get("x") if zoom is not None else None,
-                            "space": zoom.attrib.get("space") if zoom is not None else None,
-                        },
+                        "pan_tilt": {"x": pan_tilt.attrib.get("x") if pan_tilt is not None else None, "y": pan_tilt.attrib.get("y") if pan_tilt is not None else None, "space": pan_tilt.attrib.get("space") if pan_tilt is not None else None},
+                        "zoom": {"x": zoom.attrib.get("x") if zoom is not None else None, "space": zoom.attrib.get("space") if zoom is not None else None},
                     },
                     "raw": element_to_data(item),
                 })

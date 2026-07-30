@@ -25,7 +25,6 @@ CAMERA_USERNAME = os.environ["CAMERA_USERNAME"]
 CAMERA_PASSWORD = os.environ["CAMERA_PASSWORD"]
 LISTEN_HOST = os.environ.get("PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("PROXY_LISTEN_PORT", "8999"))
-PUBLIC_HOST = os.environ.get("PROXY_PUBLIC_HOST", "").strip()
 UPSTREAM_TIMEOUT = float(os.environ.get("UPSTREAM_TIMEOUT", "10"))
 SYNTHETIC_BASE_SECONDS = float(os.environ.get("SYNTHETIC_BASE_SECONDS", "0.20"))
 SYNTHETIC_SECONDS_PER_FOV = float(os.environ.get("SYNTHETIC_SECONDS_PER_FOV", "2.0"))
@@ -46,9 +45,9 @@ def log(message: str) -> None:
 
 
 def public_origin(handler: BaseHTTPRequestHandler) -> str:
-    host = PUBLIC_HOST or handler.headers.get("Host", f"127.0.0.1:{LISTEN_PORT}")
-    if ":" not in host and LISTEN_PORT not in (80, 443):
-        host = f"{host}:{LISTEN_PORT}"
+    host = handler.headers.get("Host", "").strip()
+    if not host:
+        host = f"127.0.0.1:{LISTEN_PORT}"
     return f"http://{host}"
 
 
@@ -266,5 +265,5 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    log(f"starting listener={LISTEN_HOST}:{LISTEN_PORT} upstream={UPSTREAM_ORIGIN} public_host={PUBLIC_HOST or 'request Host header'}")
+    log(f"starting listener={LISTEN_HOST}:{LISTEN_PORT} upstream={UPSTREAM_ORIGIN}")
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler).serve_forever()

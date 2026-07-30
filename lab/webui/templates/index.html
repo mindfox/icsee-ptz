@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>iCSee PTZ Lab</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<main>
+  <section class="panel">
+    <h1>iCSee PTZ Lab</h1>
+    <p class="small">Feed is disabled by default. PTZ and saved positions use ONVIF.</p>
+    <div class="camera-row">
+      <div class="feed-wrap"><img id="view" alt="Camera snapshot"><div id="feedBadge" class="feed-badge">Feed disabled</div></div>
+      <div class="controls">
+        <button id="feedToggle">Enable web feed</button>
+        <div class="grid">
+          <button data-cmd="up_left">↖</button><button data-cmd="up">▲</button><button data-cmd="up_right">↗</button>
+          <button data-cmd="left">◀</button><button id="refresh">●</button><button data-cmd="right">▶</button>
+          <button data-cmd="down_left">↙</button><button data-cmd="down">▼</button><button data-cmd="down_right">↘</button>
+        </div>
+        <div class="two"><button data-cmd="zoom_in">Zoom +</button><button data-cmd="zoom_out">Zoom −</button></div>
+        <label class="box">Movement step <input id="ptzStep" type="number" min="1" max="10" value="{{ default_ptz_step }}"><span class="small">Step 1 = {{ '%g'|format(ptz_step_seconds) }}s pulse</span></label>
+        <div class="box">
+          <strong>Saved positions</strong>
+          <select id="presetSelect"><option value="">Press Refresh list to load presets</option></select>
+          <input id="presetName" maxlength="40" placeholder="Preset name" disabled>
+          <button id="savePreset" disabled>Save current position</button>
+          <div class="two"><input id="presetSpeedX" type="number" min="1" max="8" value="1"><input id="presetSpeedY" type="number" min="1" max="8" value="1"></div>
+          <div class="two"><button id="reloadPresets">Refresh list</button><button id="gotoPreset">Go to selected</button></div>
+        </div>
+        <div id="status" class="status">Ready</div>
+        <button id="restart" class="danger">Restart web service</button>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="tabs"><button class="tab active" data-tab="consoleTab">Console log</button><button class="tab" data-tab="diagnosticsTab">Camera diagnostics</button></div>
+    <div id="consoleTab" class="tab-panel active"><button id="clearConsole">Clear view</button><div id="console" class="console">Loading logs…</div></div>
+    <div id="diagnosticsTab" class="tab-panel"><button id="runDiagnostics">Run read-only diagnostics</button><div id="diagTime" class="small">Not collected yet</div><pre id="diagnostics" class="console">Run diagnostics to query the camera.</pre></div>
+  </section>
+</main>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

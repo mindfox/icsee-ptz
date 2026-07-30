@@ -1,3 +1,4 @@
+import hashlib
 import os
 import threading
 import time
@@ -8,7 +9,12 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request
 
 from camera import CameraClient
-from onvif import OnvifClient, PRESET_SPEED_SPACE
+from onvif import (
+    FOV_TRANSLATION_SPACE,
+    GENERIC_TRANSLATION_SPACE,
+    OnvifClient,
+    PRESET_SPEED_SPACE,
+)
 
 app = Flask(__name__)
 
@@ -38,13 +44,15 @@ onvif_lock = threading.Lock()
 snapshot_lock = threading.Lock()
 log_lock = threading.Lock()
 feed_lock = threading.Lock()
+autotest_lock = threading.Lock()
 
-logs = deque(maxlen=300)
+logs = deque(maxlen=500)
 latest_snapshot = None
 latest_snapshot_sequence = 0
 latest_snapshot_time = None
 snapshot_error = None
 feed_enabled = False
+latest_autotest = None
 
 
 def add_log(level: str, message: str) -> None:
@@ -75,6 +83,12 @@ def capture_snapshot_once() -> None:
         add_log("ERROR", f"Snapshot capture failed: {type(exc).__name__}: {exc}")
 
 
+def snapshot_digest() -> dict:
+    with camera_lock:
+        jpeg = camera.snapshot()
+    return {"sha256": hashlib.sha256(jpeg).hexdigest(), "bytes": len(jpeg)}
+
+
 def snapshot_worker() -> None:
     add_log("INFO", "Snapshot worker started; feed is disabled by default")
     while True:
@@ -95,9 +109,102 @@ def exit_for_restart() -> None:
     os._exit(0)
 
 
+def sample_status(count: int = 6, interval: float = 0.2) -> list[dict]:
+    samples = []
+    for index in range(count):
+        samples.append({"offset_ms": round(index * interval * 1000), "status": onvif.get_status()})
+        if index + 1 < count:
+            time.sleep(interval)
+    return samples
+
+
+def run_relative_case(label: str, space: str, distance: float = 0.05) -> dict:
+    result = {"label": label, "space": space, "distance": distance}
+    try:
+        result["before_status"] = onvif.get_status()
+        result["before_snapshot"] = snapshot_digest()
+        result["outbound"] = onvif.relative_move(distance, 0.0, space)
+        result["outbound_status_samples"] = sample_status()
+        time.sleep(0.8)
+        result["outbound_snapshot"] = snapshot_digest()
+        result["return"] = onvif.relative_move(-distance, 0.0, space)
+        result["return_status_samples"] = sample_status()
+        time.sleep(0.8)
+        result["return_snapshot"] = snapshot_digest()
+        result["stop"] = onvif.stop()
+        result["final_status"] = onvif.get_status()
+        result["completed"] = True
+    except Exception as exc:
+        result["completed"] = False
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            result["emergency_stop"] = onvif.stop()
+        except Exception as stop_exc:
+            result["emergency_stop_error"] = f"{type(stop_exc).__name__}: {stop_exc}"
+    return result
+
+
+def run_compatibility_suite() -> dict:
+    started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    started = time.monotonic()
+    report = {
+        "suite": "frigate-onvif-compatibility-v1",
+        "started_at": started_at,
+        "camera": {"host": HOST, "onvif_port": ONVIF_PORT},
+        "warning": "Suite performs small horizontal movements and attempts to return to the starting view.",
+        "tests": {},
+    }
+    add_log("WARNING", "AUTOTEST START frigate-onvif-compatibility-v1")
+    with onvif_lock:
+        try:
+            report["tests"]["capabilities"] = onvif.diagnostics()
+            report["tests"]["generic_relative_move"] = run_relative_case("advertised-generic", GENERIC_TRANSLATION_SPACE)
+            report["tests"]["forced_fov_relative_move"] = run_relative_case("forced-fov", FOV_TRANSLATION_SPACE)
+
+            continuous = {"velocity": {"x": 0.2, "y": 0.0}, "duration_seconds": 0.6}
+            try:
+                continuous["before_status"] = onvif.get_status()
+                continuous["before_snapshot"] = snapshot_digest()
+                continuous["start"] = onvif.begin_continuous_move(0.2, 0.0)
+                continuous["moving_status_samples"] = sample_status(count=4, interval=0.15)
+                continuous["stop"] = onvif.stop()
+                continuous["after_stop_status_samples"] = sample_status(count=6, interval=0.2)
+                continuous["after_snapshot"] = snapshot_digest()
+                continuous["return"] = onvif.relative_move(-0.05, 0.0, GENERIC_TRANSLATION_SPACE)
+                time.sleep(1.0)
+                continuous["final_stop"] = onvif.stop()
+                continuous["final_status"] = onvif.get_status()
+                continuous["completed"] = True
+            except Exception as exc:
+                continuous["completed"] = False
+                continuous["error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    continuous["emergency_stop"] = onvif.stop()
+                except Exception as stop_exc:
+                    continuous["emergency_stop_error"] = f"{type(stop_exc).__name__}: {stop_exc}"
+            report["tests"]["move_status_and_stop"] = continuous
+        except Exception as exc:
+            report["fatal_error"] = f"{type(exc).__name__}: {exc}"
+            try:
+                report["fatal_emergency_stop"] = onvif.stop()
+            except Exception as stop_exc:
+                report["fatal_emergency_stop_error"] = f"{type(stop_exc).__name__}: {stop_exc}"
+
+    report["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
+    report["completed_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    add_log("WARNING", f"AUTOTEST RESULT {report!r}")
+    add_log("WARNING", "AUTOTEST END frigate-onvif-compatibility-v1")
+    return report
+
+
 @app.get("/")
 def index():
     return render_template("index.html", default_ptz_step=DEFAULT_PTZ_STEP, ptz_step_seconds=PTZ_STEP_SECONDS)
+
+
+@app.get("/autotest")
+def autotest_page():
+    return render_template("autotest.html")
 
 
 @app.get("/snapshot.jpg")
@@ -166,6 +273,25 @@ def diagnostics():
     except Exception as exc:
         add_log("ERROR", f"ONVIF PTZ diagnostics failed: {type(exc).__name__}: {exc}")
         return jsonify(error=f"{type(exc).__name__}: {exc}"), 502
+
+
+@app.post("/api/autotest/run")
+def autotest_run():
+    global latest_autotest
+    if not autotest_lock.acquire(blocking=False):
+        return jsonify(error="an automated test is already running"), 409
+    try:
+        latest_autotest = run_compatibility_suite()
+        return jsonify(latest_autotest)
+    finally:
+        autotest_lock.release()
+
+
+@app.get("/api/autotest/latest")
+def autotest_latest():
+    if latest_autotest is None:
+        return jsonify(error="no automated test has been run yet"), 404
+    return jsonify(latest_autotest)
 
 
 @app.get("/api/presets")

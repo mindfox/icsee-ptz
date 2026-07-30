@@ -5,7 +5,7 @@ This service presents the camera through a Frigate-facing ONVIF endpoint while f
 ## Implemented compatibility behavior
 
 - Proxies device, media, PTZ, imaging, events, and other ONVIF paths without hard-coding individual operations.
-- Rewrites upstream camera XAddr values to the proxy address.
+- Rewrites upstream camera XAddr values to the proxy address derived from the incoming HTTP `Host` header.
 - Adds `TranslationSpaceFov` to `GetNode` and `GetConfigurationOptions` responses.
 - Converts FOV-relative pan/tilt translations to the camera's working `TranslationGenericSpace`.
 - Synthesizes `PanTilt=MOVING` for a bounded period after translated relative moves.
@@ -26,13 +26,13 @@ docker compose -f compose.yml logs -f
 The health endpoint is:
 
 ```text
-http://PROXY_PUBLIC_HOST/health
+http://<docker-host>:8999/health
 ```
 
 The ONVIF device service is:
 
 ```text
-http://PROXY_PUBLIC_HOST/onvif/device_service
+http://<docker-host>:8999/onvif/device_service
 ```
 
 Use the Docker host address and the published proxy port in Frigate's `onvif.host` and `onvif.port` settings. Continue using the camera's normal ONVIF username and password; the proxy authenticates upstream with the values in `.env`.

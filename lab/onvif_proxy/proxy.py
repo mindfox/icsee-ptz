@@ -147,6 +147,18 @@ def ensure_fov_space(root: ET.Element) -> bool:
     return changed
 
 
+def ensure_move_status_capability(root: ET.Element) -> bool:
+    changed = False
+    for node in find_all(root, "Capabilities"):
+        if node.attrib.get("MoveStatus", "").lower() != "true":
+            node.set("MoveStatus", "true")
+            changed = True
+        if node.attrib.get("StatusPosition", "").lower() != "true":
+            node.set("StatusPosition", "true")
+            changed = True
+    return changed
+
+
 def rewrite_xaddrs(root: ET.Element, origin: str) -> bool:
     changed = False
     camera_patterns = (
@@ -193,6 +205,8 @@ def transform_response(body: bytes, origin: str, action: str) -> bytes:
     changed = rewrite_xaddrs(root, origin)
     if action in {"GetNode", "GetConfigurationOptions"}:
         changed = ensure_fov_space(root) or changed
+    if action == "GetServiceCapabilities":
+        changed = ensure_move_status_capability(root) or changed
     if action == "GetStatus":
         changed = synthesize_status(root) or changed
     return ET.tostring(root, encoding="utf-8", xml_declaration=True) if changed else body

@@ -1,0 +1,29 @@
+services:
+  frigate-onvif-proxy:
+    build:
+      context: .
+    container_name: frigate-onvif-proxy
+    restart: unless-stopped
+    environment:
+      CAMERA_HOST: ${CAMERA_HOST}
+      CAMERA_ONVIF_PORT: ${CAMERA_ONVIF_PORT:-8899}
+      CAMERA_USERNAME: ${CAMERA_USERNAME}
+      CAMERA_PASSWORD: ${CAMERA_PASSWORD}
+      PROXY_LISTEN_PORT: 8999
+      PROXY_PUBLIC_HOST: ${PROXY_PUBLIC_HOST}
+      UPSTREAM_TIMEOUT: ${UPSTREAM_TIMEOUT:-10}
+      FOV_TO_GENERIC_SCALE_X: ${FOV_TO_GENERIC_SCALE_X:-1.0}
+      FOV_TO_GENERIC_SCALE_Y: ${FOV_TO_GENERIC_SCALE_Y:-1.0}
+      SYNTHETIC_BASE_SECONDS: ${SYNTHETIC_BASE_SECONDS:-0.20}
+      SYNTHETIC_SECONDS_PER_FOV: ${SYNTHETIC_SECONDS_PER_FOV:-2.0}
+      SYNTHETIC_MIN_SECONDS: ${SYNTHETIC_MIN_SECONDS:-0.15}
+      SYNTHETIC_MAX_SECONDS: ${SYNTHETIC_MAX_SECONDS:-3.0}
+    ports:
+      - "${PROXY_PORT:-8999}:8999"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

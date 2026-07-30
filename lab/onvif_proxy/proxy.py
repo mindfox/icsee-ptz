@@ -88,12 +88,6 @@ def synthetic_is_moving() -> bool:
 
 
 def remove_zero_zoom_from_relative_move(root: ET.Element) -> bool:
-    """Remove Frigate's zero Zoom translation from pan/tilt-only moves.
-
-    The tested camera accepts a pan/tilt-only RelativeMove, but silently ignores
-    the complete request when Frigate also includes an unsupported zero Zoom
-    translation. Removing a no-op Zoom element preserves the requested motion.
-    """
     changed = False
     for translation in find_all(root, "Translation"):
         for child in list(translation):
@@ -103,17 +97,17 @@ def remove_zero_zoom_from_relative_move(root: ET.Element) -> bool:
     return changed
 
 
-def normalize_relative_move_speed(root: ET.Element) -> bool:
-    """Drop zero Zoom speed and ensure pan/tilt speed uses the supported space."""
+def remove_relative_move_speed(root: ET.Element) -> bool:
+    """Remove the optional Speed element from RelativeMove requests.
+
+    The camera accepts the minimal Translation-only form used by the lab test,
+    but silently ignores Frigate's request when a Speed element is present.
+    """
     changed = False
-    for speed in find_all(root, "Speed"):
-        for child in list(speed):
-            name = local_name(child.tag)
-            if name == "Zoom" and abs(parse_float(child.attrib.get("x"))) < 1e-9:
-                speed.remove(child)
-                changed = True
-            elif name == "PanTilt" and not child.attrib.get("space"):
-                child.set("space", "http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace")
+    for relative_move in find_all(root, "RelativeMove"):
+        for child in list(relative_move):
+            if local_name(child.tag) == "Speed":
+                relative_move.remove(child)
                 changed = True
     return changed
 
@@ -124,7 +118,7 @@ def transform_request(body: bytes) -> tuple[bytes, dict]:
         "fov_translation": None,
         "synthetic_seconds": None,
         "removed_zero_zoom": False,
-        "normalized_speed": False,
+        "removed_speed": False,
     }
     if not body:
         return body, metadata
@@ -139,7 +133,7 @@ def transform_request(body: bytes) -> tuple[bytes, dict]:
 
     if metadata["action"] == "RelativeMove":
         metadata["removed_zero_zoom"] = remove_zero_zoom_from_relative_move(root)
-        metadata["normalized_speed"] = normalize_relative_move_speed(root)
+        metadata["removed_speed"] = remove_relative_move_speed(root)
         for pan_tilt in find_all(root, "PanTilt"):
             if pan_tilt.attrib.get("space") == FOV_SPACE:
                 x = parse_float(pan_tilt.attrib.get("x"))
@@ -305,7 +299,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 detail = (
                     f" translation={metadata['fov_translation']}"
                     f" removed_zero_zoom={metadata['removed_zero_zoom']}"
-                    f" normalized_speed={metadata['normalized_speed']}"
+                    f" removed_speed={metadata['removed_speed']}"
                     f" synthetic_seconds={metadata['synthetic_seconds']}"
                 )
             log(f"{self.client_address[0]} {self.command} {self.path} action={metadata['action']} upstream={response.status_code} elapsed_ms={elapsed_ms}{detail}")

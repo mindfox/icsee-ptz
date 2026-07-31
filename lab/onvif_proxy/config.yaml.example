@@ -1,24 +1,40 @@
-environment:
-  CAMERA_HOST: ${CAMERA_HOST}
-  CAMERA_ONVIF_PORT: ${CAMERA_ONVIF_PORT:-8899}
-  CAMERA_USERNAME: ${CAMERA_USERNAME}
-  CAMERA_PASSWORD: ${CAMERA_PASSWORD}
+server:
+  listen_host: 0.0.0.0
 
-  PROXY_LISTEN_HOST: ${PROXY_LISTEN_HOST:-0.0.0.0}
-  PROXY_LISTEN_PORT: ${PROXY_LISTEN_PORT:-8999}
+defaults:
+  upstream_timeout: 10
+  retry_initial_seconds: 0.25
+  retry_max_seconds: 2.0
 
-  UPSTREAM_TIMEOUT: ${UPSTREAM_TIMEOUT:-10}
-  UPSTREAM_RETRY_INITIAL_SECONDS: ${UPSTREAM_RETRY_INITIAL_SECONDS:-0.25}
-  UPSTREAM_RETRY_MAX_SECONDS: ${UPSTREAM_RETRY_MAX_SECONDS:-2.0}
+cameras:
+  cam_2:
+    listen_port: 8999
 
-  CONTINUOUS_VELOCITY: ${CONTINUOUS_VELOCITY:-0.5}
-  PULSE_MIN_SECONDS: ${PULSE_MIN_SECONDS:-0.04}
-  PULSE_SECONDS_PER_FOV: ${PULSE_SECONDS_PER_FOV:-0.80}
-  PULSE_MAX_SECONDS: ${PULSE_MAX_SECONDS:-1.00}
-  STATUS_SETTLE_SECONDS: ${STATUS_SETTLE_SECONDS:-0.20}
-  RELATIVE_ZOOM_VELOCITY: ${RELATIVE_ZOOM_VELOCITY:-0.5}
+    upstream:
+      host: 192.168.31.176
+      onvif_port: 8899
+      username: admin
+      password: ${FRIGATE_CAM2_ONVIF_PASSWORD}
 
-  RETURN_PRESET_ZOOM_RESET: ${RETURN_PRESET_ZOOM_RESET:-true}
-  RETURN_PRESET_ZOOM_DELAY_SECONDS: ${RETURN_PRESET_ZOOM_DELAY_SECONDS:-0.25}
-  RETURN_PRESET_ZOOM_VELOCITY: ${RETURN_PRESET_ZOOM_VELOCITY:--0.5}
-  RETURN_PRESET_ZOOM_SECONDS: ${RETURN_PRESET_ZOOM_SECONDS:-8.0}
+    ptz:
+      profile_token: "000"
+
+      relative_move:
+        velocity: 0.5
+        pulse_min_seconds: 0.04
+        pulse_seconds_per_fov: 0.8
+        pulse_max_seconds: 1.0
+        status_settle_seconds: 0.2
+
+      zoom:
+        relative_velocity: 0.5
+        absolute_full_travel_seconds: 8.0
+
+      return_preset_zoom_reset:
+        enabled: true
+        delay_seconds: 0.25
+        velocity: -0.5
+        duration_seconds: 8.0
+
+      preset_aliases:
+        "0": vertical

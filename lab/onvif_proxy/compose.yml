@@ -28,6 +28,8 @@ services:
       - "${PROXY_PORT:-8999}:8999"
     volumes:
       - ./proxy.py:/app/proxy.py:ro
+      - ./relative_zoom.py:/app/relative_zoom.py:ro
+      - ./config_loader.py:/app/config_loader.py:ro
       - ./config.yaml:/app/config.yaml:ro
     read_only: true
     tmpfs:

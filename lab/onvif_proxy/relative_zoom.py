@@ -6,45 +6,75 @@ import xml.etree.ElementTree as ET
 import proxy
 
 RELATIVE_ZOOM_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/TranslationGenericSpace"
+ABSOLUTE_ZOOM_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace"
 RELATIVE_ZOOM_VELOCITY = float(os.environ.get("RELATIVE_ZOOM_VELOCITY", "0.5"))
 _request_state = threading.local()
+_zoom_state_lock = threading.Lock()
+_synthetic_zoom_position = 0.0
 
 _original_ensure_fov_space = proxy.ensure_fov_space
 _original_extract_relative_move = proxy.extract_relative_move
 _original_soap_payload = proxy.soap_payload
+_original_transform_response = proxy.transform_response
 
 
-def ensure_relative_zoom_space(root: ET.Element) -> bool:
+def _space_uri(node: ET.Element) -> str:
+    return (next((u.text for u in node if proxy.local_name(u.tag) == "URI"), "") or "").strip()
+
+
+def _add_range_space(spaces: ET.Element, element_name: str, uri: str, minimum: str, maximum: str) -> bool:
+    existing = [node for node in list(spaces) if proxy.local_name(node.tag) == element_name]
+    if any(_space_uri(node) == uri for node in existing):
+        return False
+
+    entry = ET.Element(f"{{{proxy.TT}}}{element_name}")
+    ET.SubElement(entry, f"{{{proxy.TT}}}URI").text = uri
+    x_range = ET.SubElement(entry, f"{{{proxy.TT}}}XRange")
+    ET.SubElement(x_range, f"{{{proxy.TT}}}Min").text = minimum
+    ET.SubElement(x_range, f"{{{proxy.TT}}}Max").text = maximum
+    spaces.append(entry)
+    return True
+
+
+def ensure_zoom_spaces(root: ET.Element) -> bool:
     changed = False
     for spaces in proxy.find_all(root, "Spaces") + proxy.find_all(root, "SupportedPTZSpaces"):
-        existing = [node for node in list(spaces) if proxy.local_name(node.tag) == "RelativeZoomTranslationSpace"]
-        if not any(
-            (next((u.text for u in node if proxy.local_name(u.tag) == "URI"), "") or "").strip()
-            == RELATIVE_ZOOM_SPACE
-            for node in existing
-        ):
-            entry = ET.Element(f"{{{proxy.TT}}}RelativeZoomTranslationSpace")
-            ET.SubElement(entry, f"{{{proxy.TT}}}URI").text = RELATIVE_ZOOM_SPACE
-            x_range = ET.SubElement(entry, f"{{{proxy.TT}}}XRange")
-            ET.SubElement(x_range, f"{{{proxy.TT}}}Min").text = "-1"
-            ET.SubElement(x_range, f"{{{proxy.TT}}}Max").text = "1"
-            spaces.append(entry)
-            changed = True
+        changed = _add_range_space(
+            spaces,
+            "RelativeZoomTranslationSpace",
+            RELATIVE_ZOOM_SPACE,
+            "-1",
+            "1",
+        ) or changed
+        changed = _add_range_space(
+            spaces,
+            "AbsoluteZoomPositionSpace",
+            ABSOLUTE_ZOOM_SPACE,
+            "0",
+            "1",
+        ) or changed
 
     for node in proxy.find_all(root, "DefaultRelativeZoomTranslationSpace"):
         if (node.text or "").strip() != RELATIVE_ZOOM_SPACE:
             node.text = RELATIVE_ZOOM_SPACE
             changed = True
 
+    for node in proxy.find_all(root, "DefaultAbsoluteZoomPositionSpace"):
+        if (node.text or "").strip() != ABSOLUTE_ZOOM_SPACE:
+            node.text = ABSOLUTE_ZOOM_SPACE
+            changed = True
+
     return changed
 
 
-def ensure_fov_and_zoom_space(root: ET.Element) -> bool:
+def ensure_fov_and_zoom_spaces(root: ET.Element) -> bool:
     changed = _original_ensure_fov_space(root)
-    return ensure_relative_zoom_space(root) or changed
+    return ensure_zoom_spaces(root) or changed
 
 
 def extract_relative_move(body: bytes) -> dict | None:
+    global _synthetic_zoom_position
+
     _request_state.zoom_value = 0.0
     _request_state.zoom_velocity = None
     relative = _original_extract_relative_move(body)
@@ -64,6 +94,11 @@ def extract_relative_move(body: bytes) -> dict | None:
                 _request_state.zoom_velocity = math.copysign(
                     min(abs(RELATIVE_ZOOM_VELOCITY), 1.0), zoom_value
                 )
+                with _zoom_state_lock:
+                    _synthetic_zoom_position = min(
+                        1.0,
+                        max(0.0, _synthetic_zoom_position + zoom_value),
+                    )
             break
     return relative
 
@@ -91,14 +126,73 @@ def soap_payload(operation: str, profile_token: str, **kwargs) -> bytes:
     return _original_soap_payload(operation, profile_token, **kwargs)
 
 
-proxy.ensure_fov_space = ensure_fov_and_zoom_space
+def ensure_status_zoom(root: ET.Element) -> bool:
+    changed = False
+    with _zoom_state_lock:
+        zoom_position = _synthetic_zoom_position
+
+    position_nodes = proxy.find_all(root, "Position")
+    if not position_nodes:
+        status_nodes = proxy.find_all(root, "PTZStatus")
+        if not status_nodes:
+            return False
+        position_nodes = [ET.SubElement(status_nodes[0], f"{{{proxy.TT}}}Position")]
+        changed = True
+
+    position = position_nodes[0]
+    zoom_nodes = [node for node in list(position) if proxy.local_name(node.tag) == "Zoom"]
+    if zoom_nodes:
+        zoom = zoom_nodes[0]
+    else:
+        zoom = ET.SubElement(position, f"{{{proxy.TT}}}Zoom")
+        changed = True
+
+    desired_x = f"{zoom_position:.6f}"
+    if zoom.attrib.get("x") != desired_x:
+        zoom.set("x", desired_x)
+        changed = True
+    if zoom.attrib.get("space") != ABSOLUTE_ZOOM_SPACE:
+        zoom.set("space", ABSOLUTE_ZOOM_SPACE)
+        changed = True
+
+    for move_status in proxy.find_all(root, "MoveStatus"):
+        zoom_status = [node for node in list(move_status) if proxy.local_name(node.tag) == "Zoom"]
+        if not zoom_status:
+            ET.SubElement(move_status, f"{{{proxy.TT}}}Zoom").text = "IDLE"
+            changed = True
+
+    return changed
+
+
+def transform_response(body: bytes, origin: str, action: str) -> bytes:
+    transformed = _original_transform_response(body, origin, action)
+    if not transformed:
+        return transformed
+
+    try:
+        root = ET.fromstring(transformed)
+    except ET.ParseError:
+        return transformed
+
+    changed = False
+    if action in {"GetNode", "GetConfiguration", "GetConfigurationOptions"}:
+        changed = ensure_zoom_spaces(root) or changed
+    if action == "GetStatus":
+        changed = ensure_status_zoom(root) or changed
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True) if changed else transformed
+
+
+proxy.ensure_fov_space = ensure_fov_and_zoom_spaces
 proxy.extract_relative_move = extract_relative_move
 proxy.pulse_duration = pulse_duration
 proxy.soap_payload = soap_payload
+proxy.transform_response = transform_response
 
 if __name__ == "__main__":
     proxy.log(
-        f"relative_zoom=continuous_pulse space={RELATIVE_ZOOM_SPACE} "
+        f"relative_zoom=continuous_pulse relative_space={RELATIVE_ZOOM_SPACE} "
+        f"absolute_space={ABSOLUTE_ZOOM_SPACE} range=0..1 "
         f"velocity={RELATIVE_ZOOM_VELOCITY}"
     )
     proxy.ThreadingHTTPServer((proxy.LISTEN_HOST, proxy.LISTEN_PORT), proxy.ProxyHandler).serve_forever()

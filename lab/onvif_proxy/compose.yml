@@ -4,9 +4,11 @@ services:
       context: .
     container_name: frigate-onvif-proxy
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       ONVIF_PROXY_CONFIG: /app/config.yaml
-      FRIGATE_CAM2_ONVIF_PASSWORD: ${FRIGATE_CAM2_ONVIF_PASSWORD}
+      TZ: ${TZ:-Europe/Athens}
     ports:
       - "8999:8999"
       # Add one mapping for each additional camera listener, for example:

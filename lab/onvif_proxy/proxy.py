@@ -27,6 +27,8 @@ CAMERA_PASSWORD = os.environ["CAMERA_PASSWORD"]
 LISTEN_HOST = os.environ.get("PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("PROXY_LISTEN_PORT", "8999"))
 UPSTREAM_TIMEOUT = float(os.environ.get("UPSTREAM_TIMEOUT", "10"))
+UPSTREAM_RETRY_INITIAL_SECONDS = float(os.environ.get("UPSTREAM_RETRY_INITIAL_SECONDS", "0.25"))
+UPSTREAM_RETRY_MAX_SECONDS = float(os.environ.get("UPSTREAM_RETRY_MAX_SECONDS", "2.0"))
 CONTINUOUS_VELOCITY = float(os.environ.get("CONTINUOUS_VELOCITY", "0.5"))
 PULSE_MIN_SECONDS = float(os.environ.get("PULSE_MIN_SECONDS", "0.04"))
 PULSE_SECONDS_PER_FOV = float(os.environ.get("PULSE_SECONDS_PER_FOV", "0.80"))
@@ -63,6 +65,39 @@ def public_origin(handler: BaseHTTPRequestHandler) -> str:
     return f"http://{host}"
 
 
+def request_upstream(
+    method: str,
+    url: str,
+    *,
+    action: str,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> requests.Response:
+    attempt = 0
+    delay = max(0.0, UPSTREAM_RETRY_INITIAL_SECONDS)
+    while True:
+        attempt += 1
+        try:
+            return requests.request(
+                method,
+                url,
+                data=data,
+                headers=headers,
+                auth=HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD),
+                timeout=UPSTREAM_TIMEOUT,
+            )
+        except requests.exceptions.ConnectionError as exc:
+            log(
+                f"WARN upstream-unreachable action={action} attempt={attempt} "
+                f"retry_in={delay:.2f}s error={type(exc).__name__}: {exc}"
+            )
+            time.sleep(delay)
+            delay = min(
+                max(delay * 2, UPSTREAM_RETRY_INITIAL_SECONDS),
+                UPSTREAM_RETRY_MAX_SECONDS,
+            )
+
+
 def upstream_headers(action: str) -> dict[str, str]:
     return {
         "Content-Type": f'application/soap+xml; charset=utf-8; action="http://www.onvif.org/ver20/ptz/wsdl/{action}"',
@@ -71,12 +106,12 @@ def upstream_headers(action: str) -> dict[str, str]:
 
 
 def upstream_post(path: str, action: str, payload: bytes) -> requests.Response:
-    return requests.post(
+    return request_upstream(
+        "POST",
         f"{UPSTREAM_ORIGIN}{path}",
+        action=action,
         data=payload,
         headers=upstream_headers(action),
-        auth=HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD),
-        timeout=UPSTREAM_TIMEOUT,
     )
 
 
@@ -329,13 +364,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 upstream_url += f"?{urlsplit(self.path).query}"
             headers = {name: self.headers[name] for name in ("Content-Type", "SOAPAction", "Accept", "User-Agent") if name in self.headers}
             headers["Connection"] = "close"
-            response = requests.request(
+            response = request_upstream(
                 self.command,
                 upstream_url,
+                action=action,
                 data=incoming if self.command != "GET" else None,
                 headers=headers,
-                auth=HTTPDigestAuth(CAMERA_USERNAME, CAMERA_PASSWORD),
-                timeout=UPSTREAM_TIMEOUT,
             )
             transformed = transform_response(response.content, public_origin(self), action)
             self.send_payload(response.status_code, transformed, response.headers.get("Content-Type", "application/soap+xml; charset=utf-8"))
@@ -344,7 +378,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             clear_synthetic_move()
             payload = f"upstream proxy error: {type(exc).__name__}: {exc}".encode("utf-8")
-            self.send_payload(502, payload, "text/plain; charset=utf-8")
+            try:
+                self.send_payload(502, payload, "text/plain; charset=utf-8")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             log(f"ERROR {self.command} {self.path}: {type(exc).__name__}: {exc}")
 
     def log_message(self, format, *args):
@@ -355,6 +392,7 @@ if __name__ == "__main__":
     log(
         f"starting listener={LISTEN_HOST}:{LISTEN_PORT} upstream={UPSTREAM_ORIGIN} "
         f"relative_move=continuous_pulse velocity={CONTINUOUS_VELOCITY} "
-        f"pulse={PULSE_MIN_SECONDS}+magnitude*{PULSE_SECONDS_PER_FOV} max={PULSE_MAX_SECONDS}"
+        f"pulse={PULSE_MIN_SECONDS}+magnitude*{PULSE_SECONDS_PER_FOV} max={PULSE_MAX_SECONDS} "
+        f"connection_retry=forever backoff={UPSTREAM_RETRY_INITIAL_SECONDS}-{UPSTREAM_RETRY_MAX_SECONDS}s"
     )
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler).serve_forever()

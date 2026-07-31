@@ -1,0 +1,26 @@
+services:
+  frigate-onvif-proxy:
+    build:
+      context: .
+    container_name: frigate-onvif-proxy
+    restart: unless-stopped
+    environment:
+      ONVIF_PROXY_CONFIG: /app/config.yaml
+      CAMERA_PASSWORD: ${CAMERA_PASSWORD}
+      TZ: ${TZ:-Europe/Athens}
+    ports:
+      - "8999:8999"
+      # Add one mapping for each additional camera listener, for example:
+      # - "9000:9000"
+    volumes:
+      - ./proxy.py:/app/proxy.py:ro
+      - ./relative_zoom.py:/app/relative_zoom.py:ro
+      - ./config_loader.py:/app/config_loader.py:ro
+      - ./config.yaml:/app/config.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

@@ -34,7 +34,6 @@ PULSE_MIN_SECONDS = float(os.environ.get("PULSE_MIN_SECONDS", "0.04"))
 PULSE_SECONDS_PER_FOV = float(os.environ.get("PULSE_SECONDS_PER_FOV", "0.80"))
 PULSE_MAX_SECONDS = float(os.environ.get("PULSE_MAX_SECONDS", "1.00"))
 STATUS_SETTLE_SECONDS = float(os.environ.get("STATUS_SETTLE_SECONDS", "0.20"))
-RETURN_PRESET_TOKEN = os.environ.get("RETURN_PRESET_TOKEN", "vertical")
 RETURN_PRESET_ZOOM_RESET = os.environ.get("RETURN_PRESET_ZOOM_RESET", "true").strip().lower() in {"1", "true", "yes", "on"}
 RETURN_PRESET_ZOOM_DELAY_SECONDS = float(os.environ.get("RETURN_PRESET_ZOOM_DELAY_SECONDS", "0.25"))
 RETURN_PRESET_ZOOM_VELOCITY = float(os.environ.get("RETURN_PRESET_ZOOM_VELOCITY", "-0.5"))
@@ -449,7 +448,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 RETURN_PRESET_ZOOM_RESET
                 and response.status_code < 400
                 and goto_preset is not None
-                and goto_preset["preset_token"] == RETURN_PRESET_TOKEN
             ):
                 threading.Thread(
                     target=reset_zoom_after_preset,
@@ -475,7 +473,7 @@ if __name__ == "__main__":
         f"relative_move=continuous_pulse velocity={CONTINUOUS_VELOCITY} "
         f"pulse={PULSE_MIN_SECONDS}+magnitude*{PULSE_SECONDS_PER_FOV} max={PULSE_MAX_SECONDS} "
         f"connection_retry=forever backoff={UPSTREAM_RETRY_INITIAL_SECONDS}-{UPSTREAM_RETRY_MAX_SECONDS}s "
-        f"return_preset_zoom_reset={RETURN_PRESET_ZOOM_RESET} preset={RETURN_PRESET_TOKEN!r} "
+        f"return_preset_zoom_reset={RETURN_PRESET_ZOOM_RESET} trigger=any-successful-goto-preset "
         f"zoom_velocity={RETURN_PRESET_ZOOM_VELOCITY} zoom_seconds={RETURN_PRESET_ZOOM_SECONDS}"
     )
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler).serve_forever()

@@ -17,9 +17,61 @@ _original_extract_relative_move = proxy.extract_relative_move
 _original_soap_payload = proxy.soap_payload
 _original_transform_response = proxy.transform_response
 
+PTZ_CONFIGURATION_ORDER = [
+    "NodeToken",
+    "DefaultAbsolutePantTiltPositionSpace",
+    "DefaultAbsoluteZoomPositionSpace",
+    "DefaultRelativePanTiltTranslationSpace",
+    "DefaultRelativeZoomTranslationSpace",
+    "DefaultContinuousPanTiltVelocitySpace",
+    "DefaultContinuousZoomVelocitySpace",
+    "DefaultPTZSpeed",
+    "DefaultPTZTimeout",
+    "PanTiltLimits",
+    "ZoomLimits",
+    "Extension",
+]
+
+PTZ_SPACES_ORDER = [
+    "AbsolutePanTiltPositionSpace",
+    "AbsoluteZoomPositionSpace",
+    "RelativePanTiltTranslationSpace",
+    "RelativeZoomTranslationSpace",
+    "ContinuousPanTiltVelocitySpace",
+    "ContinuousZoomVelocitySpace",
+    "PanTiltSpeedSpace",
+    "ZoomSpeedSpace",
+    "Extension",
+]
+
 
 def _space_uri(node: ET.Element) -> str:
     return (next((u.text for u in node if proxy.local_name(u.tag) == "URI"), "") or "").strip()
+
+
+def _insert_in_schema_order(
+    parent: ET.Element,
+    child: ET.Element,
+    order: list[str],
+) -> None:
+    child_name = proxy.local_name(child.tag)
+    try:
+        child_rank = order.index(child_name)
+    except ValueError:
+        parent.append(child)
+        return
+
+    siblings = list(parent)
+    for index, sibling in enumerate(siblings):
+        sibling_name = proxy.local_name(sibling.tag)
+        try:
+            sibling_rank = order.index(sibling_name)
+        except ValueError:
+            continue
+        if sibling_rank > child_rank:
+            parent.insert(index, child)
+            return
+    parent.append(child)
 
 
 def _add_range_space(
@@ -38,7 +90,7 @@ def _add_range_space(
     x_range = ET.SubElement(entry, f"{{{proxy.TT}}}XRange")
     ET.SubElement(x_range, f"{{{proxy.TT}}}Min").text = minimum
     ET.SubElement(x_range, f"{{{proxy.TT}}}Max").text = maximum
-    spaces.append(entry)
+    _insert_in_schema_order(spaces, entry, PTZ_SPACES_ORDER)
     return True
 
 
@@ -60,7 +112,9 @@ def _ensure_default_space(
                 changed = True
         return changed
 
-    ET.SubElement(configuration, f"{{{proxy.TT}}}{element_name}").text = uri
+    node = ET.Element(f"{{{proxy.TT}}}{element_name}")
+    node.text = uri
+    _insert_in_schema_order(configuration, node, PTZ_CONFIGURATION_ORDER)
     return True
 
 
@@ -69,32 +123,36 @@ def ensure_profile_zoom_defaults(root: ET.Element) -> bool:
     for configuration in proxy.find_all(root, "PTZConfiguration"):
         changed = _ensure_default_space(
             configuration,
-            "DefaultRelativeZoomTranslationSpace",
-            RELATIVE_ZOOM_SPACE,
+            "DefaultAbsoluteZoomPositionSpace",
+            ABSOLUTE_ZOOM_SPACE,
         ) or changed
         changed = _ensure_default_space(
             configuration,
-            "DefaultAbsoluteZoomPositionSpace",
-            ABSOLUTE_ZOOM_SPACE,
+            "DefaultRelativeZoomTranslationSpace",
+            RELATIVE_ZOOM_SPACE,
         ) or changed
     return changed
 
 
 def ensure_zoom_spaces(root: ET.Element) -> bool:
     changed = False
+    seen: set[int] = set()
     for spaces in proxy.find_all(root, "Spaces") + proxy.find_all(root, "SupportedPTZSpaces"):
-        changed = _add_range_space(
-            spaces,
-            "RelativeZoomTranslationSpace",
-            RELATIVE_ZOOM_SPACE,
-            "-1",
-            "1",
-        ) or changed
+        if id(spaces) in seen:
+            continue
+        seen.add(id(spaces))
         changed = _add_range_space(
             spaces,
             "AbsoluteZoomPositionSpace",
             ABSOLUTE_ZOOM_SPACE,
             "0",
+            "1",
+        ) or changed
+        changed = _add_range_space(
+            spaces,
+            "RelativeZoomTranslationSpace",
+            RELATIVE_ZOOM_SPACE,
+            "-1",
             "1",
         ) or changed
 

@@ -1,6 +1,6 @@
 import os
 import re
-import runpy
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,85 @@ def load_environment() -> None:
         os.environ[name] = expand_environment(value)
 
 
+def parse_preset_name_aliases(value: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        token, separator, name = item.partition("=")
+        token = token.strip()
+        name = name.strip()
+        if not separator or not token or not name:
+            raise RuntimeError(
+                "PRESET_NAME_ALIASES must use comma-separated token=name entries"
+            )
+        aliases[token] = name
+    return aliases
+
+
+def install_preset_name_compatibility(proxy_module: Any) -> None:
+    aliases = parse_preset_name_aliases(
+        os.environ.get("PRESET_NAME_ALIASES", "0=vertical")
+    )
+    original_transform_response = proxy_module.transform_response
+
+    def transform_response(body: bytes, origin: str, action: str) -> bytes:
+        transformed = original_transform_response(body, origin, action)
+        if action != "GetPresets" or not transformed or not aliases:
+            return transformed
+
+        try:
+            root = ET.fromstring(transformed)
+        except ET.ParseError:
+            return transformed
+
+        changed = False
+        for preset in proxy_module.find_all(root, "Preset"):
+            token = (preset.attrib.get("token") or "").strip()
+            alias = aliases.get(token)
+            if not alias:
+                continue
+
+            name_nodes = [
+                node
+                for node in list(preset)
+                if proxy_module.local_name(node.tag) == "Name"
+            ]
+            if name_nodes:
+                if not (name_nodes[0].text or "").strip():
+                    name_nodes[0].text = alias
+                    changed = True
+            else:
+                name = ET.Element(f"{{{proxy_module.TT}}}Name")
+                name.text = alias
+                preset.insert(0, name)
+                changed = True
+
+        if not changed:
+            return transformed
+
+        proxy_module.log(
+            "restored blank preset names using aliases="
+            + ",".join(f"{token}={name}" for token, name in aliases.items())
+        )
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    proxy_module.transform_response = transform_response
+
+
 if __name__ == "__main__":
     load_environment()
-    runpy.run_path("/app/relative_zoom.py", run_name="__main__")
+
+    import proxy
+    import relative_zoom
+
+    install_preset_name_compatibility(proxy)
+    proxy.log(
+        "preset_name_aliases="
+        + os.environ.get("PRESET_NAME_ALIASES", "0=vertical")
+    )
+    proxy.ThreadingHTTPServer(
+        (proxy.LISTEN_HOST, proxy.LISTEN_PORT),
+        proxy.ProxyHandler,
+    ).serve_forever()

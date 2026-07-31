@@ -168,6 +168,7 @@ def ensure_fov_space(root: ET.Element) -> bool:
     for spaces in find_all(root, "Spaces") + find_all(root, "SupportedPTZSpaces"):
         existing = [node for node in list(spaces) if local_name(node.tag) == "RelativePanTiltTranslationSpace"]
         if not any((next((u.text for u in node if local_name(u.tag) == "URI"), "") or "").strip() == FOV_SPACE for node in existing):
+            template = existing[0] if existing else None
             entry = ET.Element(f"{{{TT}}}RelativePanTiltTranslationSpace")
             ET.SubElement(entry, f"{{{TT}}}URI").text = FOV_SPACE
             x_range = ET.SubElement(entry, f"{{{TT}}}XRange")
@@ -176,7 +177,10 @@ def ensure_fov_space(root: ET.Element) -> bool:
             y_range = ET.SubElement(entry, f"{{{TT}}}YRange")
             ET.SubElement(y_range, f"{{{TT}}}Min").text = "-1"
             ET.SubElement(y_range, f"{{{TT}}}Max").text = "1"
-            spaces.append(entry)
+            if template is not None:
+                spaces.insert(list(spaces).index(template) + 1, entry)
+            else:
+                spaces.append(entry)
             changed = True
 
     for node in find_all(root, "DefaultRelativePanTiltTranslationSpace"):

@@ -14,7 +14,7 @@ cameras:
       host: 192.168.31.176
       onvif_port: 8899
       username: admin
-      password: ${FRIGATE_CAM2_ONVIF_PASSWORD}
+      password: ${CAMERA_PASSWORD}
 
     ptz:
       profile_token: "000"

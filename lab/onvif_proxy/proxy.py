@@ -14,6 +14,7 @@ SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
 TPTZ = "http://www.onvif.org/ver20/ptz/wsdl"
 TT = "http://www.onvif.org/ver10/schema"
 FOV_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov"
+GENERIC_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationGenericSpace"
 
 ET.register_namespace("s", SOAP12)
 ET.register_namespace("tptz", TPTZ)
@@ -166,18 +167,23 @@ def ensure_fov_space(root: ET.Element) -> bool:
     changed = False
     for spaces in find_all(root, "Spaces") + find_all(root, "SupportedPTZSpaces"):
         existing = [node for node in list(spaces) if local_name(node.tag) == "RelativePanTiltTranslationSpace"]
-        if any((next((u.text for u in node if local_name(u.tag) == "URI"), "") or "").strip() == FOV_SPACE for node in existing):
-            continue
-        entry = ET.Element(f"{{{TT}}}RelativePanTiltTranslationSpace")
-        ET.SubElement(entry, f"{{{TT}}}URI").text = FOV_SPACE
-        x_range = ET.SubElement(entry, f"{{{TT}}}XRange")
-        ET.SubElement(x_range, f"{{{TT}}}Min").text = "-1"
-        ET.SubElement(x_range, f"{{{TT}}}Max").text = "1"
-        y_range = ET.SubElement(entry, f"{{{TT}}}YRange")
-        ET.SubElement(y_range, f"{{{TT}}}Min").text = "-1"
-        ET.SubElement(y_range, f"{{{TT}}}Max").text = "1"
-        spaces.append(entry)
-        changed = True
+        if not any((next((u.text for u in node if local_name(u.tag) == "URI"), "") or "").strip() == FOV_SPACE for node in existing):
+            entry = ET.Element(f"{{{TT}}}RelativePanTiltTranslationSpace")
+            ET.SubElement(entry, f"{{{TT}}}URI").text = FOV_SPACE
+            x_range = ET.SubElement(entry, f"{{{TT}}}XRange")
+            ET.SubElement(x_range, f"{{{TT}}}Min").text = "-1"
+            ET.SubElement(x_range, f"{{{TT}}}Max").text = "1"
+            y_range = ET.SubElement(entry, f"{{{TT}}}YRange")
+            ET.SubElement(y_range, f"{{{TT}}}Min").text = "-1"
+            ET.SubElement(y_range, f"{{{TT}}}Max").text = "1"
+            spaces.append(entry)
+            changed = True
+
+    for node in find_all(root, "DefaultRelativePanTiltTranslationSpace"):
+        if (node.text or "").strip() != FOV_SPACE:
+            node.text = FOV_SPACE
+            changed = True
+
     return changed
 
 
@@ -228,7 +234,7 @@ def transform_response(body: bytes, origin: str, action: str) -> bytes:
         text = body.decode("utf-8", errors="replace")
         return re.sub(rf"http://{re.escape(CAMERA_HOST)}(?::{CAMERA_ONVIF_PORT})?", origin, text).encode("utf-8")
     changed = rewrite_xaddrs(root, origin)
-    if action in {"GetNode", "GetConfigurationOptions"}:
+    if action in {"GetNode", "GetConfiguration", "GetConfigurationOptions"}:
         changed = ensure_fov_space(root) or changed
     if action == "GetServiceCapabilities":
         changed = ensure_move_status_capability(root) or changed

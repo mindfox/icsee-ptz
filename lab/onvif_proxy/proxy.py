@@ -34,6 +34,11 @@ PULSE_MIN_SECONDS = float(os.environ.get("PULSE_MIN_SECONDS", "0.04"))
 PULSE_SECONDS_PER_FOV = float(os.environ.get("PULSE_SECONDS_PER_FOV", "0.80"))
 PULSE_MAX_SECONDS = float(os.environ.get("PULSE_MAX_SECONDS", "1.00"))
 STATUS_SETTLE_SECONDS = float(os.environ.get("STATUS_SETTLE_SECONDS", "0.20"))
+RETURN_PRESET_TOKEN = os.environ.get("RETURN_PRESET_TOKEN", "vertical")
+RETURN_PRESET_ZOOM_RESET = os.environ.get("RETURN_PRESET_ZOOM_RESET", "true").strip().lower() in {"1", "true", "yes", "on"}
+RETURN_PRESET_ZOOM_DELAY_SECONDS = float(os.environ.get("RETURN_PRESET_ZOOM_DELAY_SECONDS", "0.25"))
+RETURN_PRESET_ZOOM_VELOCITY = float(os.environ.get("RETURN_PRESET_ZOOM_VELOCITY", "-0.5"))
+RETURN_PRESET_ZOOM_SECONDS = float(os.environ.get("RETURN_PRESET_ZOOM_SECONDS", "4.0"))
 
 UPSTREAM_ORIGIN = f"http://{CAMERA_HOST}:{CAMERA_ONVIF_PORT}"
 _state_lock = threading.Lock()
@@ -115,19 +120,32 @@ def upstream_post(path: str, action: str, payload: bytes) -> requests.Response:
     )
 
 
-def soap_payload(operation: str, profile_token: str, *, x: float = 0.0, y: float = 0.0) -> bytes:
+def soap_payload(
+    operation: str,
+    profile_token: str,
+    *,
+    x: float = 0.0,
+    y: float = 0.0,
+    zoom: float | None = None,
+    stop_pan_tilt: bool = True,
+    stop_zoom: bool = False,
+) -> bytes:
     envelope = ET.Element(f"{{{SOAP12}}}Envelope")
     body = ET.SubElement(envelope, f"{{{SOAP12}}}Body")
     op = ET.SubElement(body, f"{{{TPTZ}}}{operation}")
     ET.SubElement(op, f"{{{TPTZ}}}ProfileToken").text = profile_token
     if operation == "ContinuousMove":
         velocity = ET.SubElement(op, f"{{{TPTZ}}}Velocity")
-        pan_tilt = ET.SubElement(velocity, f"{{{TT}}}PanTilt")
-        pan_tilt.set("x", f"{x:g}")
-        pan_tilt.set("y", f"{y:g}")
+        if abs(x) > 1e-9 or abs(y) > 1e-9:
+            pan_tilt = ET.SubElement(velocity, f"{{{TT}}}PanTilt")
+            pan_tilt.set("x", f"{x:g}")
+            pan_tilt.set("y", f"{y:g}")
+        if zoom is not None:
+            zoom_node = ET.SubElement(velocity, f"{{{TT}}}Zoom")
+            zoom_node.set("x", f"{zoom:g}")
     elif operation == "Stop":
-        ET.SubElement(op, f"{{{TPTZ}}}PanTilt").text = "true"
-        ET.SubElement(op, f"{{{TPTZ}}}Zoom").text = "false"
+        ET.SubElement(op, f"{{{TPTZ}}}PanTilt").text = str(stop_pan_tilt).lower()
+        ET.SubElement(op, f"{{{TPTZ}}}Zoom").text = str(stop_zoom).lower()
     return ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
 
 
@@ -187,6 +205,25 @@ def extract_relative_move(body: bytes) -> dict | None:
     return None
 
 
+def extract_goto_preset(body: bytes) -> dict | None:
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return None
+    body_nodes = find_all(root, "Body")
+    if not body_nodes or not list(body_nodes[0]) or local_name(list(body_nodes[0])[0].tag) != "GotoPreset":
+        return None
+    profile_nodes = find_all(root, "ProfileToken")
+    preset_nodes = find_all(root, "PresetToken")
+    if not profile_nodes or not preset_nodes:
+        return None
+    profile_token = (profile_nodes[0].text or "").strip()
+    preset_token = (preset_nodes[0].text or "").strip()
+    if not profile_token or not preset_token:
+        return None
+    return {"profile_token": profile_token, "preset_token": preset_token}
+
+
 def stop_after_pulse(path: str, profile_token: str, delay: float, generation: int) -> None:
     time.sleep(delay)
     try:
@@ -196,6 +233,37 @@ def stop_after_pulse(path: str, profile_token: str, delay: float, generation: in
         log(f"ERROR pulse-stop profile={profile_token!r}: {type(exc).__name__}: {exc}")
     finally:
         clear_synthetic_move(generation)
+
+
+def reset_zoom_after_preset(path: str, profile_token: str, preset_token: str) -> None:
+    time.sleep(max(0.0, RETURN_PRESET_ZOOM_DELAY_SECONDS))
+    try:
+        response = upstream_post(
+            path,
+            "ContinuousMove",
+            soap_payload("ContinuousMove", profile_token, zoom=RETURN_PRESET_ZOOM_VELOCITY),
+        )
+        log(
+            f"return-preset-zoom-reset preset={preset_token!r} profile={profile_token!r} "
+            f"velocity={RETURN_PRESET_ZOOM_VELOCITY:g} status={response.status_code}"
+        )
+        if response.status_code < 400:
+            time.sleep(max(0.0, RETURN_PRESET_ZOOM_SECONDS))
+    except Exception as exc:
+        log(f"ERROR return-preset-zoom-reset preset={preset_token!r}: {type(exc).__name__}: {exc}")
+    finally:
+        try:
+            stop_response = upstream_post(
+                path,
+                "Stop",
+                soap_payload("Stop", profile_token, stop_pan_tilt=False, stop_zoom=True),
+            )
+            log(
+                f"return-preset-zoom-stop preset={preset_token!r} profile={profile_token!r} "
+                f"status={stop_response.status_code} delay={RETURN_PRESET_ZOOM_SECONDS:.3f}s"
+            )
+        except Exception as exc:
+            log(f"ERROR return-preset-zoom-stop preset={preset_token!r}: {type(exc).__name__}: {exc}")
 
 
 def ensure_fov_space(root: ET.Element) -> bool:
@@ -322,6 +390,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         action = soap_action(incoming)
         relative = extract_relative_move(incoming)
+        goto_preset = extract_goto_preset(incoming)
         started = time.monotonic()
 
         try:
@@ -375,6 +444,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_payload(response.status_code, transformed, response.headers.get("Content-Type", "application/soap+xml; charset=utf-8"))
             elapsed_ms = round((time.monotonic() - started) * 1000, 1)
             log(f"{self.client_address[0]} {self.command} {self.path} action={action} upstream={response.status_code} elapsed_ms={elapsed_ms}")
+
+            if (
+                RETURN_PRESET_ZOOM_RESET
+                and response.status_code < 400
+                and goto_preset is not None
+                and goto_preset["preset_token"] == RETURN_PRESET_TOKEN
+            ):
+                threading.Thread(
+                    target=reset_zoom_after_preset,
+                    args=(path, goto_preset["profile_token"], goto_preset["preset_token"]),
+                    daemon=True,
+                ).start()
         except Exception as exc:
             clear_synthetic_move()
             payload = f"upstream proxy error: {type(exc).__name__}: {exc}".encode("utf-8")
@@ -393,6 +474,8 @@ if __name__ == "__main__":
         f"starting listener={LISTEN_HOST}:{LISTEN_PORT} upstream={UPSTREAM_ORIGIN} "
         f"relative_move=continuous_pulse velocity={CONTINUOUS_VELOCITY} "
         f"pulse={PULSE_MIN_SECONDS}+magnitude*{PULSE_SECONDS_PER_FOV} max={PULSE_MAX_SECONDS} "
-        f"connection_retry=forever backoff={UPSTREAM_RETRY_INITIAL_SECONDS}-{UPSTREAM_RETRY_MAX_SECONDS}s"
+        f"connection_retry=forever backoff={UPSTREAM_RETRY_INITIAL_SECONDS}-{UPSTREAM_RETRY_MAX_SECONDS}s "
+        f"return_preset_zoom_reset={RETURN_PRESET_ZOOM_RESET} preset={RETURN_PRESET_TOKEN!r} "
+        f"zoom_velocity={RETURN_PRESET_ZOOM_VELOCITY} zoom_seconds={RETURN_PRESET_ZOOM_SECONDS}"
     )
     ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler).serve_forever()

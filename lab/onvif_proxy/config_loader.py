@@ -53,4 +53,4 @@ def load_environment() -> None:
 
 if __name__ == "__main__":
     load_environment()
-    runpy.run_path("/app/proxy.py", run_name="__main__")
+    runpy.run_path("/app/relative_zoom.py", run_name="__main__")

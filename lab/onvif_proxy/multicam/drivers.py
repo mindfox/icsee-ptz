@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import threading
+import time
+import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
+import requests
+from requests.auth import HTTPDigestAuth
+
 from .config import CameraConfig
+
+SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
+TPTZ = "http://www.onvif.org/ver20/ptz/wsdl"
+TT = "http://www.onvif.org/ver10/schema"
 
 
 @dataclass(frozen=True)
@@ -39,36 +48,64 @@ class CameraDriver(ABC):
             "name": self.config.name,
             "driver": self.config.driver,
             "host": self.config.host,
-            "capabilities": self.capabilities.__dict__,
+            "listen": f"{self.config.listen_host}:{self.config.listen_port}",
+            "capabilities": asdict(self.capabilities),
         }
 
 
-class IcseeOnvifDriver(CameraDriver):
-    """Marker driver for the existing proxy implementation.
+def _soap(operation: str, *, pan: float = 0, tilt: float = 0) -> bytes:
+    envelope = ET.Element(f"{{{SOAP12}}}Envelope")
+    body = ET.SubElement(envelope, f"{{{SOAP12}}}Body")
+    op = ET.SubElement(body, f"{{{TPTZ}}}{operation}")
+    ET.SubElement(op, f"{{{TPTZ}}}ProfileToken").text = "000"
+    if operation == "ContinuousMove":
+        velocity = ET.SubElement(op, f"{{{TPTZ}}}Velocity")
+        node = ET.SubElement(velocity, f"{{{TT}}}PanTilt")
+        node.set("x", str(pan))
+        node.set("y", str(tilt))
+    elif operation == "Stop":
+        ET.SubElement(op, f"{{{TPTZ}}}PanTilt").text = "true"
+        ET.SubElement(op, f"{{{TPTZ}}}Zoom").text = "false"
+    return ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
 
-    The currently tested ONVIF translation remains in proxy.py. The multicamera
-    launcher starts one legacy proxy process per camera and uses this class for
-    capability discovery in the shared UI.
-    """
+
+class IcseeOnvifDriver(CameraDriver):
+    def __init__(self, config: CameraConfig):
+        super().__init__(config)
+        self._lock = threading.RLock()
+        self._port = int(config.options.get("onvif_port", 8899))
+        self._path = str(config.options.get("ptz_path", "/onvif/ptz_service"))
+        self._timeout = float(config.options.get("timeout", 10))
 
     @property
     def capabilities(self) -> CameraCapabilities:
         return CameraCapabilities(pan_tilt=True, zoom=True, presets=True)
 
+    def _post(self, operation: str, payload: bytes) -> None:
+        response = requests.post(
+            f"http://{self.config.host}:{self._port}{self._path}",
+            data=payload,
+            headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{TPTZ}/{operation}"'},
+            auth=HTTPDigestAuth(self.config.username or "", self.config.password or ""),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+
     def move(self, pan: float, tilt: float, duration: float) -> None:
-        raise RuntimeError("iCSee movement is handled by the per-camera legacy ONVIF listener")
+        with self._lock:
+            self._post("ContinuousMove", _soap("ContinuousMove", pan=pan, tilt=tilt))
+        threading.Thread(target=self._stop_after, args=(max(0.04, duration),), daemon=True).start()
+
+    def _stop_after(self, duration: float) -> None:
+        time.sleep(duration)
+        self.stop()
 
     def stop(self) -> None:
-        raise RuntimeError("iCSee stop is handled by the per-camera legacy ONVIF listener")
+        with self._lock:
+            self._post("Stop", _soap("Stop"))
 
 
 class TapoC200Driver(CameraDriver):
-    """Local Tapo C200 PTZ driver using pytapo.
-
-    Tapo firmware expects commands in strict sequence. All calls are serialized
-    per camera with a re-entrant lock; no parallel requests are issued.
-    """
-
     def __init__(self, config: CameraConfig):
         super().__init__(config)
         if not config.username or not config.password:
@@ -77,17 +114,18 @@ class TapoC200Driver(CameraDriver):
             from pytapo import Tapo
         except ImportError as exc:
             raise RuntimeError("pytapo is required for the tapo_c200 driver") from exc
-
         self._lock = threading.RLock()
         self._camera = Tapo(config.host, config.username, config.password)
         self._step = int(config.options.get("step", 10))
+        if self._step < 1:
+            raise ValueError(f"{config.camera_id}: step must be positive")
 
     @property
     def capabilities(self) -> CameraCapabilities:
-        return CameraCapabilities(pan_tilt=True, zoom=False, presets=True, audio=True)
+        return CameraCapabilities(pan_tilt=True, zoom=False, presets=False, audio=False)
 
     def move(self, pan: float, tilt: float, duration: float) -> None:
-        del duration  # Tapo exposes discrete motor steps rather than timed velocity.
+        del duration
         horizontal = round(max(-1.0, min(1.0, pan)) * self._step)
         vertical = round(max(-1.0, min(1.0, tilt)) * self._step)
         if horizontal == 0 and vertical == 0:
@@ -96,12 +134,11 @@ class TapoC200Driver(CameraDriver):
             self._camera.moveMotor(horizontal, vertical)
 
     def stop(self) -> None:
-        # moveMotor is a bounded discrete move; there is no continuous motion to stop.
         return
 
     def status(self) -> dict[str, Any]:
-        with self._lock:
-            info = self._camera.getBasicInfo()
         status = super().status()
-        status["device"] = info
+        if bool(self.config.options.get("query_device_info", False)):
+            with self._lock:
+                status["device"] = self._camera.getBasicInfo()
         return status

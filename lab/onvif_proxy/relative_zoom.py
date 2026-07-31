@@ -11,7 +11,6 @@ _request_state = threading.local()
 
 _original_ensure_fov_space = proxy.ensure_fov_space
 _original_extract_relative_move = proxy.extract_relative_move
-_original_pulse_duration = proxy.pulse_duration
 _original_soap_payload = proxy.soap_payload
 
 
@@ -41,10 +40,12 @@ def ensure_relative_zoom_space(root: ET.Element) -> bool:
 
 
 def ensure_fov_and_zoom_space(root: ET.Element) -> bool:
-    return ensure_relative_zoom_space(root) or _original_ensure_fov_space(root)
+    changed = _original_ensure_fov_space(root)
+    return ensure_relative_zoom_space(root) or changed
 
 
 def extract_relative_move(body: bytes) -> dict | None:
+    _request_state.zoom_value = 0.0
     _request_state.zoom_velocity = None
     relative = _original_extract_relative_move(body)
     if relative is None:
@@ -55,23 +56,20 @@ def extract_relative_move(body: bytes) -> dict | None:
     except ET.ParseError:
         return relative
 
-    zoom_value = 0.0
     for zoom in proxy.find_all(root, "Zoom"):
         if zoom.attrib.get("space") in (None, "", RELATIVE_ZOOM_SPACE):
             zoom_value = proxy.parse_float(zoom.attrib.get("x"))
+            if abs(zoom_value) > 1e-9:
+                _request_state.zoom_value = zoom_value
+                _request_state.zoom_velocity = math.copysign(
+                    min(abs(RELATIVE_ZOOM_VELOCITY), 1.0), zoom_value
+                )
             break
-
-    if abs(zoom_value) > 1e-9:
-        _request_state.zoom_value = zoom_value
-        _request_state.zoom_velocity = math.copysign(
-            min(abs(RELATIVE_ZOOM_VELOCITY), 1.0), zoom_value
-        )
     return relative
 
 
 def pulse_duration(x: float, y: float) -> float:
-    zoom_value = abs(getattr(_request_state, "zoom_value", 0.0))
-    magnitude = max(abs(x), abs(y), zoom_value)
+    magnitude = max(abs(x), abs(y), abs(getattr(_request_state, "zoom_value", 0.0)))
     if magnitude <= 1e-9:
         return 0.0
     return max(

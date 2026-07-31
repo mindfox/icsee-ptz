@@ -22,7 +22,13 @@ def _space_uri(node: ET.Element) -> str:
     return (next((u.text for u in node if proxy.local_name(u.tag) == "URI"), "") or "").strip()
 
 
-def _add_range_space(spaces: ET.Element, element_name: str, uri: str, minimum: str, maximum: str) -> bool:
+def _add_range_space(
+    spaces: ET.Element,
+    element_name: str,
+    uri: str,
+    minimum: str,
+    maximum: str,
+) -> bool:
     existing = [node for node in list(spaces) if proxy.local_name(node.tag) == element_name]
     if any(_space_uri(node) == uri for node in existing):
         return False
@@ -34,6 +40,44 @@ def _add_range_space(spaces: ET.Element, element_name: str, uri: str, minimum: s
     ET.SubElement(x_range, f"{{{proxy.TT}}}Max").text = maximum
     spaces.append(entry)
     return True
+
+
+def _ensure_default_space(
+    configuration: ET.Element,
+    element_name: str,
+    uri: str,
+) -> bool:
+    existing = [
+        node
+        for node in list(configuration)
+        if proxy.local_name(node.tag) == element_name
+    ]
+    if existing:
+        changed = False
+        for node in existing:
+            if (node.text or "").strip() != uri:
+                node.text = uri
+                changed = True
+        return changed
+
+    ET.SubElement(configuration, f"{{{proxy.TT}}}{element_name}").text = uri
+    return True
+
+
+def ensure_profile_zoom_defaults(root: ET.Element) -> bool:
+    changed = False
+    for configuration in proxy.find_all(root, "PTZConfiguration"):
+        changed = _ensure_default_space(
+            configuration,
+            "DefaultRelativeZoomTranslationSpace",
+            RELATIVE_ZOOM_SPACE,
+        ) or changed
+        changed = _ensure_default_space(
+            configuration,
+            "DefaultAbsoluteZoomPositionSpace",
+            ABSOLUTE_ZOOM_SPACE,
+        ) or changed
+    return changed
 
 
 def ensure_zoom_spaces(root: ET.Element) -> bool:
@@ -69,7 +113,9 @@ def ensure_zoom_spaces(root: ET.Element) -> bool:
 
 def ensure_fov_and_zoom_spaces(root: ET.Element) -> bool:
     changed = _original_ensure_fov_space(root)
-    return ensure_zoom_spaces(root) or changed
+    changed = ensure_zoom_spaces(root) or changed
+    changed = ensure_profile_zoom_defaults(root) or changed
+    return changed
 
 
 def extract_relative_move(body: bytes) -> dict | None:
@@ -104,7 +150,11 @@ def extract_relative_move(body: bytes) -> dict | None:
 
 
 def pulse_duration(x: float, y: float) -> float:
-    magnitude = max(abs(x), abs(y), abs(getattr(_request_state, "zoom_value", 0.0)))
+    magnitude = max(
+        abs(x),
+        abs(y),
+        abs(getattr(_request_state, "zoom_value", 0.0)),
+    )
     if magnitude <= 1e-9:
         return 0.0
     return max(
@@ -140,7 +190,9 @@ def ensure_status_zoom(root: ET.Element) -> bool:
         changed = True
 
     position = position_nodes[0]
-    zoom_nodes = [node for node in list(position) if proxy.local_name(node.tag) == "Zoom"]
+    zoom_nodes = [
+        node for node in list(position) if proxy.local_name(node.tag) == "Zoom"
+    ]
     if zoom_nodes:
         zoom = zoom_nodes[0]
     else:
@@ -156,7 +208,11 @@ def ensure_status_zoom(root: ET.Element) -> bool:
         changed = True
 
     for move_status in proxy.find_all(root, "MoveStatus"):
-        zoom_status = [node for node in list(move_status) if proxy.local_name(node.tag) == "Zoom"]
+        zoom_status = [
+            node
+            for node in list(move_status)
+            if proxy.local_name(node.tag) == "Zoom"
+        ]
         if not zoom_status:
             ET.SubElement(move_status, f"{{{proxy.TT}}}Zoom").text = "IDLE"
             changed = True
@@ -175,12 +231,23 @@ def transform_response(body: bytes, origin: str, action: str) -> bytes:
         return transformed
 
     changed = False
+    if action in {
+        "GetProfiles",
+        "GetProfile",
+        "GetConfigurations",
+        "GetConfiguration",
+    }:
+        changed = ensure_profile_zoom_defaults(root) or changed
     if action in {"GetNode", "GetConfiguration", "GetConfigurationOptions"}:
         changed = ensure_zoom_spaces(root) or changed
     if action == "GetStatus":
         changed = ensure_status_zoom(root) or changed
 
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True) if changed else transformed
+    return (
+        ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        if changed
+        else transformed
+    )
 
 
 proxy.ensure_fov_space = ensure_fov_and_zoom_spaces
@@ -195,4 +262,7 @@ if __name__ == "__main__":
         f"absolute_space={ABSOLUTE_ZOOM_SPACE} range=0..1 "
         f"velocity={RELATIVE_ZOOM_VELOCITY}"
     )
-    proxy.ThreadingHTTPServer((proxy.LISTEN_HOST, proxy.LISTEN_PORT), proxy.ProxyHandler).serve_forever()
+    proxy.ThreadingHTTPServer(
+        (proxy.LISTEN_HOST, proxy.LISTEN_PORT),
+        proxy.ProxyHandler,
+    ).serve_forever()

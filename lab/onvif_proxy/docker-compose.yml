@@ -4,9 +4,10 @@ services:
       context: .
     container_name: frigate-onvif-proxy
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       ONVIF_PROXY_CONFIG: /app/config.yaml
-      CAMERA_PASSWORD: ${CAMERA_PASSWORD}
       TZ: ${TZ:-Europe/Athens}
     ports:
       - "8999:8999"

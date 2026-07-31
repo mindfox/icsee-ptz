@@ -1,0 +1,37 @@
+web:
+  host: 0.0.0.0
+  port: 8080
+
+cameras:
+  - id: yard-icsee
+    name: Yard PTZ
+    driver: icsee_onvif
+    host: 192.168.31.50
+    username: camera-user
+    password: change-me
+    listen:
+      host: 0.0.0.0
+      port: 8999
+    options:
+      onvif_port: 8899
+      continuous_velocity: 0.5
+      pulse_min_seconds: 0.04
+      pulse_seconds_per_fov: 0.80
+      pulse_max_seconds: 1.00
+      return_preset_zoom_reset: true
+
+  - id: tapo-c200-1
+    name: Tapo C200
+    driver: tapo_c200
+    host: 192.168.250.60
+    username: camera-account-user
+    password: change-me
+    listen:
+      host: 0.0.0.0
+      port: 9000
+    options:
+      step: 10
+      onvif_port: 2020
+      rtsp_port: 554
+      main_stream: /stream1
+      sub_stream: /stream2

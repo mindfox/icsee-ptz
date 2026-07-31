@@ -1,2 +1,4 @@
 PyYAML==6.0.2
 requests==2.32.4
+PyYAML==6.0.2
+pytapo==3.3.48

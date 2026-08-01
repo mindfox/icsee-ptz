@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .onvif_synth import advertise_ptz, synthetic_ptz_response
+from .onvif_synth import advertise_fov_relative, advertise_ptz, synthetic_ptz_response
 
 SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
 TPTZ = "http://www.onvif.org/ver20/ptz/wsdl"
@@ -103,6 +103,15 @@ class TapoHandler(BaseHTTPRequestHandler):
             payload = response.content.replace(camera.encode(), public.encode())
             if operation in {"GetCapabilities", "GetServices"}:
                 payload = advertise_ptz(payload, public)
+            if operation in {
+                "GetProfiles",
+                "GetNodes",
+                "GetNode",
+                "GetConfigurations",
+                "GetConfiguration",
+                "GetConfigurationOptions",
+            }:
+                payload = advertise_fov_relative(payload)
             self.send_payload(response.status_code, payload, response.headers.get("Content-Type", "application/soap+xml; charset=utf-8"))
         except requests.RequestException as exc:
             self.server.runtime.add_log(self.server.camera.camera_id, "ERROR", f"ONVIF forward failed: {type(exc).__name__}: {exc}")

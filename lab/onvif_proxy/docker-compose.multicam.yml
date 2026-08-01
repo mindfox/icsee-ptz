@@ -1,0 +1,36 @@
+services:
+  multicam-onvif-proxy:
+    build:
+      context: .
+    image: icsee-ptz-multicam-onvif-proxy:local
+    container_name: multicam-onvif-test
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - multicam.main
+      - --config
+      - /config/cameras.yaml
+      - --proxy-script
+      - /app/proxy.py
+    environment:
+      TZ: ${TZ:-Europe/Athens}
+    ports:
+      - "12080:12080"
+      - "12001:12001"
+      - "12002:12002"
+    volumes:
+      # Application code is bind-mounted from the Git checkout. Python-only
+      # changes require git pull + container restart, not an image rebuild.
+      - ./multicam:/app/multicam:ro
+      - ./proxy.py:/app/proxy.py:ro
+      - ./relative_zoom.py:/app/relative_zoom.py:ro
+      - ./config_loader.py:/app/config_loader.py:ro
+      - ./local-config/cameras.yaml:/config/cameras.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

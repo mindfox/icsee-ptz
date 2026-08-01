@@ -14,15 +14,13 @@ HTML = r'''<!doctype html>
     header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }
     h1 { margin:0; font-size:2rem; }
     .subtitle,.meta { color:var(--muted); }
-    .toolbar { display:flex; gap:10px; align-items:end; margin-bottom:18px; }
-    .field { flex:1; }
-    label { display:block; margin-bottom:6px; color:var(--muted); font-size:.9rem; }
-    select,button { border:1px solid var(--border); border-radius:10px; background:var(--panel2); color:var(--text); }
-    select { width:100%; padding:11px 12px; }
+    .selector-wrap { min-width:210px; }
+    .selector-wrap label { display:block; margin-bottom:5px; color:var(--muted); font-size:.78rem; text-align:right; }
+    select,button { border:1px solid var(--border); border-radius:9px; background:var(--panel2); color:var(--text); }
+    select { width:220px; max-width:42vw; padding:8px 10px; }
     button { cursor:pointer; }
     button:hover:not(:disabled) { border-color:var(--accent); }
     button:disabled { opacity:.35; cursor:not-allowed; }
-    .refresh { padding:11px 14px; }
     .card { border:1px solid var(--border); border-radius:16px; padding:20px; background:var(--panel); }
     .card-head { display:flex; justify-content:space-between; gap:14px; }
     .camera-name { margin:0 0 4px; font-size:1.2rem; }
@@ -39,27 +37,24 @@ HTML = r'''<!doctype html>
     .message.ok { color:#a7f3c1; }
     .message.bad,.error { color:#ffc1c1; }
     .error { margin-top:12px; padding:10px; border:1px solid #66303a; border-radius:9px; background:#381d23; word-break:break-word; }
-    @media(max-width:620px){header,.toolbar{flex-direction:column}.refresh{width:100%}.field{width:100%}}
+    .empty { color:var(--muted); padding:18px 0; }
+    @media(max-width:620px){header{flex-direction:column}.selector-wrap{width:100%}.selector-wrap label{text-align:left}select{width:100%;max-width:none}}
   </style>
 </head>
 <body>
 <div class="shell">
   <header>
-    <div><h1>ONVIF Camera Control</h1><div class="subtitle">Select one configured camera to test</div></div>
-  </header>
-  <div class="toolbar">
-    <div class="field">
-      <label for="camera-selector">Active camera</label>
-      <select id="camera-selector"></select>
+    <div><h1>ONVIF Camera Control</h1><div class="subtitle">Test one configured camera at a time</div></div>
+    <div class="selector-wrap">
+      <label for="camera-selector">Camera</label>
+      <select id="camera-selector" disabled><option>Loading cameras…</option></select>
     </div>
-    <button id="refresh" class="refresh" type="button">Refresh status</button>
-  </div>
-  <main id="active-camera">Loading cameras…</main>
+  </header>
+  <main id="active-camera" class="empty">Loading cameras…</main>
 </div>
 <script>
 const selector = document.getElementById('camera-selector');
 const active = document.getElementById('active-camera');
-const refresh = document.getElementById('refresh');
 const messages = new Map();
 let cameras = [];
 let selectedId = localStorage.getItem('multicam-active-camera') || '';
@@ -67,32 +62,31 @@ let selectedId = localStorage.getItem('multicam-active-camera') || '';
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-
 function capability(name, enabled) {
   return `<span class="cap${enabled ? '' : ' off'}">${esc(name)}</span>`;
 }
-
 function renderSelector() {
-  selector.innerHTML = cameras.map(camera => `<option value="${esc(camera.id)}">${esc(camera.name)} (${esc(camera.id)})</option>`).join('');
   if (!cameras.length) {
+    selector.innerHTML = '<option>No configured cameras</option>';
     selector.disabled = true;
-    active.textContent = 'No cameras configured.';
+    active.className = 'empty';
+    active.textContent = 'No configured cameras were returned by the proxy.';
     return;
   }
-  selector.disabled = false;
+  selector.innerHTML = cameras.map(camera => `<option value="${esc(camera.id)}">${esc(camera.name)}</option>`).join('');
   if (!cameras.some(camera => camera.id === selectedId)) selectedId = cameras[0].id;
   selector.value = selectedId;
+  selector.disabled = false;
 }
-
 function renderActive() {
   const camera = cameras.find(item => item.id === selectedId);
   if (!camera) return;
   const state = camera.connection_state || (camera.available === false ? 'unavailable' : 'available');
-  const usable = camera.available !== false;
   const caps = camera.capabilities || {};
-  const disabled = !usable || !caps.pan_tilt;
+  const disabled = camera.available === false || !caps.pan_tilt;
   const message = messages.get(camera.id);
-  active.innerHTML = `<section class="card" data-camera-card="${esc(camera.id)}">
+  active.className = '';
+  active.innerHTML = `<section class="card">
     <div class="card-head">
       <div><h2 class="camera-name">${esc(camera.name)}</h2><div class="meta">${esc(camera.driver)} · ${esc(camera.host)}<br>${esc(camera.listen || '')}</div></div>
       <span class="status ${state === 'unavailable' ? 'bad' : state === 'untested' ? 'untested' : ''}">${esc(state)}</span>
@@ -109,15 +103,15 @@ function renderActive() {
     ${camera.error ? `<div class="error">${esc(camera.error)}</div>` : ''}
   </section>`;
 }
-
 async function loadCameras() {
   const response = await fetch('/api/cameras', {cache:'no-store'});
   if (!response.ok) throw new Error(`Status request failed: HTTP ${response.status}`);
-  cameras = await response.json();
+  const data = await response.json();
+  if (!Array.isArray(data)) throw new Error('Status response was not a camera list');
+  cameras = data;
   renderSelector();
   renderActive();
 }
-
 async function sendCommand(button) {
   const id = selectedId;
   const command = button.dataset.command;
@@ -139,7 +133,6 @@ async function sendCommand(button) {
   }
   await loadCameras();
 }
-
 active.addEventListener('click', event => {
   const button = event.target.closest('button[data-command]');
   if (!button || button.disabled) return;
@@ -150,8 +143,12 @@ selector.addEventListener('change', () => {
   localStorage.setItem('multicam-active-camera', selectedId);
   renderActive();
 });
-refresh.addEventListener('click', () => loadCameras().catch(error => { active.textContent = error.message; }));
-loadCameras().catch(error => { active.textContent = error.message; });
+loadCameras().catch(error => {
+  selector.innerHTML = '<option>Camera list unavailable</option>';
+  selector.disabled = true;
+  active.className = 'error';
+  active.textContent = error.message;
+});
 setInterval(() => loadCameras().catch(() => {}), 10000);
 </script>
 </body>

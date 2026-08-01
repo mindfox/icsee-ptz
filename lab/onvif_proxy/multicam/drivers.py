@@ -49,6 +49,7 @@ class CameraDriver(ABC):
             "driver": self.config.driver,
             "host": self.config.host,
             "listen": f"{self.config.listen_host}:{self.config.listen_port}",
+            "available": True,
             "capabilities": asdict(self.capabilities),
         }
 
@@ -106,16 +107,22 @@ class IcseeOnvifDriver(CameraDriver):
 
 
 class TapoC200Driver(CameraDriver):
+    """Tapo motor driver with lazy private-API initialization.
+
+    Constructing the multi-camera runtime must never contact a camera. Some Tapo
+    firmware revisions reject pytapo's private authentication while RTSP/ONVIF
+    remain usable. The failure is therefore contained to commands for this
+    camera instead of terminating every listener and the shared web UI.
+    """
+
     def __init__(self, config: CameraConfig):
         super().__init__(config)
         if not config.username or not config.password:
             raise ValueError(f"{config.camera_id}: Tapo username and password are required")
-        try:
-            from pytapo import Tapo
-        except ImportError as exc:
-            raise RuntimeError("pytapo is required for the tapo_c200 driver") from exc
+
         self._lock = threading.RLock()
-        self._camera = Tapo(config.host, config.username, config.password)
+        self._camera: Any | None = None
+        self._connection_error: str | None = None
         self._step = int(config.options.get("step", 10))
         if self._step < 1:
             raise ValueError(f"{config.camera_id}: step must be positive")
@@ -124,21 +131,64 @@ class TapoC200Driver(CameraDriver):
     def capabilities(self) -> CameraCapabilities:
         return CameraCapabilities(pan_tilt=True, zoom=False, presets=False, audio=False)
 
+    def _connect(self) -> Any:
+        if self._camera is not None:
+            return self._camera
+
+        try:
+            from pytapo import Tapo
+        except ImportError as exc:
+            self._connection_error = "pytapo is not installed"
+            raise RuntimeError(self._connection_error) from exc
+
+        try:
+            self._camera = Tapo(
+                self.config.host,
+                self.config.username,
+                self.config.password,
+            )
+        except Exception as exc:
+            self._connection_error = f"{type(exc).__name__}: {exc}"
+            raise RuntimeError(
+                f"{self.config.camera_id}: Tapo private API unavailable: "
+                f"{self._connection_error}"
+            ) from exc
+
+        self._connection_error = None
+        return self._camera
+
     def move(self, pan: float, tilt: float, duration: float) -> None:
         del duration
         horizontal = round(max(-1.0, min(1.0, pan)) * self._step)
         vertical = round(max(-1.0, min(1.0, tilt)) * self._step)
+        if bool(self.config.options.get("invert_pan", False)):
+            horizontal = -horizontal
+        if bool(self.config.options.get("invert_tilt", False)):
+            vertical = -vertical
         if horizontal == 0 and vertical == 0:
             return
+
         with self._lock:
-            self._camera.moveMotor(horizontal, vertical)
+            self._connect().moveMotor(horizontal, vertical)
 
     def stop(self) -> None:
+        # moveMotor is a discrete movement command; there is no continuous
+        # movement session to stop through this backend.
         return
 
     def status(self) -> dict[str, Any]:
         status = super().status()
+        status["available"] = self._connection_error is None
+        if self._connection_error is not None:
+            status["error"] = self._connection_error
+
         if bool(self.config.options.get("query_device_info", False)):
-            with self._lock:
-                status["device"] = self._camera.getBasicInfo()
+            try:
+                with self._lock:
+                    status["device"] = self._connect().getBasicInfo()
+                status["available"] = True
+                status.pop("error", None)
+            except Exception as exc:
+                status["available"] = False
+                status["error"] = f"{type(exc).__name__}: {exc}"
         return status

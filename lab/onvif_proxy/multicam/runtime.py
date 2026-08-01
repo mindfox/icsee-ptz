@@ -7,7 +7,8 @@ from collections import deque
 from datetime import datetime, timezone
 
 from .config import ProxyConfig
-from .control import DvripSnapshotClient, ProxyOnvifClient, RtspSnapshotClient
+from .control import DvripSnapshotClient, ProxyOnvifClient
+from .persistent_feed import PersistentRtspFeed
 from .registry import DriverRegistry
 from .tapo_server import TapoServer
 
@@ -39,7 +40,12 @@ class CameraRuntime:
                 elif camera.driver == "tapo_c200":
                     self.controls[camera.camera_id] = driver
                     if bool(camera.options.get("live_feed", True)):
-                        self.snapshots[camera.camera_id] = RtspSnapshotClient(camera)
+                        self.snapshots[camera.camera_id] = PersistentRtspFeed(
+                            camera,
+                            lambda level, message, camera_id=camera.camera_id: self.add_log(
+                                camera_id, level, message
+                            ),
+                        )
                 self.add_log(camera.camera_id, "INFO", f"Configured driver={camera.driver} host={camera.host} listener={camera.listen_host}:{camera.listen_port}")
             except Exception as exc:
                 self.errors[camera.camera_id] = f"{type(exc).__name__}: {exc}"
@@ -109,6 +115,13 @@ class CameraRuntime:
                 self.add_log(camera.camera_id, "ERROR", f"Startup failed: {self.errors[camera.camera_id]}")
 
     def stop(self):
+        for camera_id, snapshot in self.snapshots.items():
+            stop = getattr(snapshot, "stop", None)
+            if stop is not None:
+                try:
+                    stop()
+                except Exception as exc:
+                    self.add_log(camera_id, "ERROR", f"Stopping live feed failed: {type(exc).__name__}: {exc}")
         for camera_id, server in self.servers:
             self.add_log(camera_id, "INFO", "Stopping listener")
             server.shutdown()
@@ -135,6 +148,10 @@ class CameraRuntime:
                     item["error"] = "legacy proxy process is not running"
                 item["feed_supported"] = camera.camera_id in self.snapshots
                 item["feed_enabled"] = self.feed_enabled.get(camera.camera_id, False)
+                snapshot = self.snapshots.get(camera.camera_id)
+                feed_status = getattr(snapshot, "status", None)
+                if feed_status is not None:
+                    item["feed_status"] = feed_status()
                 result.append(item)
             except Exception as exc:
                 result.append({"id": camera.camera_id, "name": camera.name, "driver": camera.driver, "host": camera.host, "available": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -236,11 +253,26 @@ class CameraRuntime:
 
     def set_feed(self, camera_id, enabled):
         self._camera(camera_id)
-        if enabled and camera_id not in self.snapshots:
-            raise RuntimeError(f"{camera_id}: live feed is not supported")
-        self.feed_enabled[camera_id] = bool(enabled)
+        try:
+            client = self.snapshots[camera_id]
+        except KeyError as exc:
+            if enabled:
+                raise RuntimeError(f"{camera_id}: live feed is not supported") from exc
+            self.feed_enabled[camera_id] = False
+            return False
+
+        enabled = bool(enabled)
+        if enabled:
+            start = getattr(client, "start", None)
+            if start is not None:
+                start()
+        else:
+            stop = getattr(client, "stop", None)
+            if stop is not None:
+                stop()
+        self.feed_enabled[camera_id] = enabled
         self.add_log(camera_id, "INFO", f"Live feed {'enabled' if enabled else 'disabled'}")
-        return self.feed_enabled[camera_id]
+        return enabled
 
     def snapshot(self, camera_id):
         self._camera(camera_id)

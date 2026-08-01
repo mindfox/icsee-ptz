@@ -5,6 +5,7 @@ import importlib.util
 import threading
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -25,8 +26,34 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def element_to_data(node: ET.Element | None):
+    if node is None:
+        return None
+    children = list(node)
+    result = {f"@{_local_name(key)}": value for key, value in node.attrib.items()}
+    text = (node.text or "").strip()
+    if not children:
+        if result:
+            if text:
+                result["#text"] = text
+            return result
+        return text
+    for child in children:
+        key = _local_name(child.tag)
+        value = element_to_data(child)
+        if key in result:
+            if not isinstance(result[key], list):
+                result[key] = [result[key]]
+            result[key].append(value)
+        else:
+            result[key] = value
+    if text:
+        result["#text"] = text
+    return result
+
+
 class ProxyOnvifClient:
-    """Manual test controls routed through the per-camera local ONVIF listener."""
+    """Manual test and diagnostics client routed through the per-camera ONVIF listener."""
 
     def __init__(self, camera: CameraConfig):
         self.camera = camera
@@ -63,19 +90,109 @@ class ProxyOnvifClient:
             raise RuntimeError(f"ONVIF SOAP fault: {detail}")
         return ET.fromstring(response.content)
 
-    def _profile(self) -> str:
-        if self.profile_token:
-            return self.profile_token
+    def _query_ptz(self, action: str, xml: str) -> ET.Element:
+        return self._post(
+            self.ptz_url,
+            f"{TPTZ_NS}/{action}",
+            self._envelope(xml, f'xmlns:tptz="{TPTZ_NS}"'),
+        )
+
+    def get_profile_details(self) -> dict:
         root = self._post(
             self.media_url,
             f"{TRT_NS}/GetProfiles",
             self._envelope("<trt:GetProfiles/>", f'xmlns:trt="{TRT_NS}"'),
         )
         profiles = root.findall(f".//{{{TRT_NS}}}Profiles")
-        if not profiles or not profiles[0].attrib.get("token"):
+        if not profiles:
+            raise RuntimeError("ONVIF GetProfiles returned no profiles")
+        selected = profiles[0]
+        token = selected.attrib.get("token")
+        if not token:
+            raise RuntimeError("ONVIF profile has no token")
+        self.profile_token = token
+        ptz_config = selected.find(f"{{{TT_NS}}}PTZConfiguration")
+        node_token_node = ptz_config.find(f"{{{TT_NS}}}NodeToken") if ptz_config is not None else None
+        return {
+            "token": token,
+            "name": (selected.findtext(f"{{{TT_NS}}}Name") or "").strip(),
+            "ptz_configuration_token": ptz_config.attrib.get("token") if ptz_config is not None else None,
+            "ptz_node_token": (node_token_node.text or "").strip() if node_token_node is not None else None,
+            "raw": element_to_data(selected),
+        }
+
+    def _profile(self) -> str:
+        if not self.profile_token:
+            self.get_profile_details()
+        if not self.profile_token:
             raise RuntimeError("ONVIF GetProfiles returned no usable profile")
-        self.profile_token = profiles[0].attrib["token"]
         return self.profile_token
+
+    def get_status(self) -> dict:
+        token = self._profile()
+        root = self._query_ptz(
+            "GetStatus",
+            f"<tptz:GetStatus><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken></tptz:GetStatus>",
+        )
+        status = root.find(f".//{{{TPTZ_NS}}}PTZStatus")
+        return element_to_data(status) if status is not None else element_to_data(root)
+
+    def diagnostics(self) -> dict:
+        with self.lock:
+            profile = self.get_profile_details()
+            config_token = profile.get("ptz_configuration_token")
+            node_token = profile.get("ptz_node_token")
+            if not config_token:
+                raise RuntimeError("selected media profile has no PTZ configuration token")
+
+            config_root = self._query_ptz(
+                "GetConfiguration",
+                f"<tptz:GetConfiguration><tptz:PTZConfigurationToken>{escape(config_token)}</tptz:PTZConfigurationToken></tptz:GetConfiguration>",
+            )
+            config_node = config_root.find(f".//{{{TPTZ_NS}}}PTZConfiguration")
+            configuration = element_to_data(config_node) if config_node is not None else element_to_data(config_root)
+
+            if not node_token and config_node is not None:
+                node_element = config_node.find(f"{{{TT_NS}}}NodeToken")
+                node_token = (node_element.text or "").strip() if node_element is not None else None
+            if not node_token:
+                raise RuntimeError("PTZ configuration has no node token")
+
+            node_root = self._query_ptz(
+                "GetNode",
+                f"<tptz:GetNode><tptz:NodeToken>{escape(node_token)}</tptz:NodeToken></tptz:GetNode>",
+            )
+            node_element = node_root.find(f".//{{{TPTZ_NS}}}PTZNode")
+            node = element_to_data(node_element) if node_element is not None else element_to_data(node_root)
+
+            options_root = self._query_ptz(
+                "GetConfigurationOptions",
+                f"<tptz:GetConfigurationOptions><tptz:ConfigurationToken>{escape(config_token)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>",
+            )
+            options_element = options_root.find(f".//{{{TPTZ_NS}}}PTZConfigurationOptions")
+            options = element_to_data(options_element) if options_element is not None else element_to_data(options_root)
+
+            return {
+                "collected_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "camera": {
+                    "id": self.camera.camera_id,
+                    "name": self.camera.name,
+                    "host": self.camera.host,
+                    "listener": self.base,
+                },
+                "sources": {
+                    "profile": "GetProfiles",
+                    "configuration": "GetConfiguration",
+                    "node": "GetNode",
+                    "configuration_options": "GetConfigurationOptions",
+                    "status": "GetStatus",
+                },
+                "profile": profile,
+                "configuration": configuration,
+                "node": node,
+                "configuration_options": options,
+                "status": self.get_status(),
+            }
 
     def continuous_move(self, *, zoom: float, seconds: float) -> dict:
         with self.lock:
@@ -111,10 +228,25 @@ class ProxyOnvifClient:
         for item in root.findall(f".//{{{TPTZ_NS}}}Preset"):
             preset_token = item.attrib.get("token", "")
             name_node = item.find(f"{{{TT_NS}}}Name")
+            position_node = item.find(f"{{{TT_NS}}}PTZPosition")
+            pan_tilt = position_node.find(f"{{{TT_NS}}}PanTilt") if position_node is not None else None
+            zoom = position_node.find(f"{{{TT_NS}}}Zoom") if position_node is not None else None
             if preset_token:
                 result.append({
                     "token": preset_token,
                     "name": (name_node.text or "").strip() if name_node is not None else "",
+                    "position": {
+                        "pan_tilt": {
+                            "x": pan_tilt.attrib.get("x") if pan_tilt is not None else None,
+                            "y": pan_tilt.attrib.get("y") if pan_tilt is not None else None,
+                            "space": pan_tilt.attrib.get("space") if pan_tilt is not None else None,
+                        },
+                        "zoom": {
+                            "x": zoom.attrib.get("x") if zoom is not None else None,
+                            "space": zoom.attrib.get("space") if zoom is not None else None,
+                        },
+                    },
+                    "raw": element_to_data(item),
                 })
         return result
 

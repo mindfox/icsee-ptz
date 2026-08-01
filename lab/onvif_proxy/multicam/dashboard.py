@@ -99,8 +99,17 @@ function renderSelector() {
 }
 function presetOptions(camera) {
   const presets = presetCache.get(camera.id) || [];
-  if (!presets.length) return '<option value="">Load presets first</option>';
-  return presets.map(p => `<option value="${esc(p.token)}">${esc(p.name || `Preset ${p.token}`)}</option>`).join('');
+  if (!presets.length) return '<option value="">Press Refresh to load presets</option>';
+  return '<option value="">Select a saved position</option>' + presets.map(p =>
+    `<option value="${esc(p.token)}" data-name="${esc(p.name || '')}">${esc(p.name || '(unnamed)')} [${esc(p.token)}]</option>`
+  ).join('');
+}
+function syncPresetName() {
+  const select = document.getElementById('preset-selector');
+  const input = document.getElementById('preset-name');
+  if (!select || !input) return;
+  const option = select.options[select.selectedIndex];
+  input.value = select.value && option ? (option.dataset.name || '') : '';
 }
 function updateMessage(id) {
   if (id !== selectedId) return;
@@ -112,7 +121,10 @@ function updateMessage(id) {
 }
 function updatePresetSelector(camera) {
   const element = document.getElementById('preset-selector');
-  if (element && camera.id === selectedId) element.innerHTML = presetOptions(camera);
+  if (element && camera.id === selectedId) {
+    element.innerHTML = presetOptions(camera);
+    syncPresetName();
+  }
 }
 function renderActive() {
   const camera = currentCamera();
@@ -178,6 +190,7 @@ function renderActive() {
     <div class="message ${message?.ok ? 'ok' : message ? 'bad' : ''}">${message ? esc(message.text) : ''}</div>
     ${camera.error ? `<div class="error">${esc(camera.error)}</div>` : ''}
   </section>`;
+  syncPresetName();
   syncFeedTimer(camera);
 }
 function syncFeedTimer(camera) {
@@ -255,6 +268,10 @@ active.addEventListener('click', event => {
   runAction(button);
 });
 active.addEventListener('change', async event => {
+  if (event.target.id === 'preset-selector') {
+    syncPresetName();
+    return;
+  }
   if (event.target.id !== 'feed-toggle') return;
   try {
     await post('feed', {enabled:event.target.checked});

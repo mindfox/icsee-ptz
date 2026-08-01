@@ -50,6 +50,7 @@ class CameraDriver(ABC):
             "host": self.config.host,
             "listen": f"{self.config.listen_host}:{self.config.listen_port}",
             "available": True,
+            "connection_state": "available",
             "capabilities": asdict(self.capabilities),
         }
 
@@ -123,6 +124,7 @@ class TapoC200Driver(CameraDriver):
         self._lock = threading.RLock()
         self._camera: Any | None = None
         self._connection_error: str | None = None
+        self._connection_attempted = False
         self._step = int(config.options.get("step", 10))
         if self._step < 1:
             raise ValueError(f"{config.camera_id}: step must be positive")
@@ -135,6 +137,7 @@ class TapoC200Driver(CameraDriver):
         if self._camera is not None:
             return self._camera
 
+        self._connection_attempted = True
         try:
             from pytapo import Tapo
         except ImportError as exc:
@@ -172,23 +175,30 @@ class TapoC200Driver(CameraDriver):
             self._connect().moveMotor(horizontal, vertical)
 
     def stop(self) -> None:
-        # moveMotor is a discrete movement command; there is no continuous
-        # movement session to stop through this backend.
         return
 
     def status(self) -> dict[str, Any]:
         status = super().status()
-        status["available"] = self._connection_error is None
-        if self._connection_error is not None:
+        if not self._connection_attempted:
+            status["available"] = None
+            status["connection_state"] = "untested"
+        elif self._connection_error is not None:
+            status["available"] = False
+            status["connection_state"] = "unavailable"
             status["error"] = self._connection_error
+        else:
+            status["available"] = True
+            status["connection_state"] = "available"
 
         if bool(self.config.options.get("query_device_info", False)):
             try:
                 with self._lock:
                     status["device"] = self._connect().getBasicInfo()
                 status["available"] = True
+                status["connection_state"] = "available"
                 status.pop("error", None)
             except Exception as exc:
                 status["available"] = False
+                status["connection_state"] = "unavailable"
                 status["error"] = f"{type(exc).__name__}: {exc}"
         return status

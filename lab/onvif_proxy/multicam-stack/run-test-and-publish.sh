@@ -80,6 +80,7 @@ mkdir -p "$WORK_DIR" "$(dirname "$RESULT_FILE")"
 
 STARTED_AT="$(date --iso-8601=seconds)"
 HOSTNAME_VALUE="$(hostname)"
+TEST_RC=99
 
 {
     printf 'test=%s\n' "$TEST_NAME"
@@ -203,7 +204,6 @@ PY
     printf '\ntest_exit_code=%s\n' "$TEST_RC"
     printf 'log_capture_exit_code=%s\n' "$LOG_RC"
 } >"$RAW_FILE" 2>&1
-TEST_RC=$?
 
 FINISHED_AT="$(date --iso-8601=seconds)"
 
@@ -218,7 +218,6 @@ config_path = Path(sys.argv[3])
 test_name, started, finished, source_sha, rc = sys.argv[4:9]
 text = raw_path.read_text(encoding="utf-8", errors="replace")
 
-# Generic URL and key/value redaction.
 text = re.sub(r"(rtsp://)[^/@\s]+:[^/@\s]+@", r"\1<redacted>@", text)
 text = re.sub(
     r"(?im)^(\s*(?:username|password|user|pass)\s*[:=]\s*).+$",
@@ -226,7 +225,6 @@ text = re.sub(
     text,
 )
 
-# Replace exact locally configured credentials if PyYAML is available.
 try:
     import yaml
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}

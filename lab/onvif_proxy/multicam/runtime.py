@@ -265,6 +265,12 @@ class CameraRuntime:
         except KeyError as exc:
             raise RuntimeError(f"{camera_id}: control is not supported") from exc
 
+    def diagnostics(self, camera_id):
+        self.add_log(camera_id, "INFO", "Read-only ONVIF diagnostics requested")
+        result = self._control(camera_id).diagnostics()
+        self.add_log(camera_id, "INFO", "Read-only ONVIF diagnostics completed")
+        return result
+
     def move(self, camera_id, pan, tilt, duration=0.1):
         self.add_log(camera_id, "INFO", f"PTZ move requested pan={pan:g} tilt={tilt:g} duration={duration:g}s")
         self._driver(camera_id).move(pan, tilt, duration)
@@ -376,6 +382,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 result = self.server.runtime.zoom(camera_id, str(payload.get("direction", "")), float(payload.get("duration", 0.08)))
             elif command == "feed" and len(parts) == 4:
                 result = {"enabled": self.server.runtime.set_feed(camera_id, bool(payload.get("enabled", False)))}
+            elif command == "diagnostics" and len(parts) == 4:
+                result = self.server.runtime.diagnostics(camera_id)
             elif command == "presets" and len(parts) == 5:
                 result = self.server.runtime.set_preset(camera_id, unquote(parts[4]), str(payload.get("name", "")).strip())
             elif command == "presets" and len(parts) == 6 and parts[5] == "goto":

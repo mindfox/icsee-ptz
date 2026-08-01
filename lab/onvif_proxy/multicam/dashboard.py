@@ -1,78 +1,17 @@
 from __future__ import annotations
 
-HTML = r'''<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ONVIF Camera Control</title>
-  <style>
-    :root{color-scheme:dark;--bg:#0b1220;--panel:#111a2b;--panel2:#172236;--border:#2a3952;--text:#edf3ff;--muted:#9aa9bf;--accent:#5ea0ff}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;overflow-y:auto;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text)}
-    .shell{max-width:1440px;margin:auto;padding:10px 16px 24px}
-    header{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:8px}h1,h2,h3{margin:0}.subtitle,.meta,.hint{color:var(--muted)}
-    header h1{font-size:1.55rem}.subtitle{font-size:.88rem}.selector-wrap{display:flex;align-items:center;gap:8px}.selector-wrap label{color:var(--muted);font-size:.8rem}
-    select,input,button{border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text)}select,input{padding:7px 9px}button{padding:7px 10px;cursor:pointer}button:hover:not(:disabled){border-color:var(--accent)}button:disabled{opacity:.35;cursor:not-allowed}
-    #camera-selector{width:220px}.card{border:1px solid var(--border);border-radius:14px;padding:10px 12px;background:var(--panel)}
-    .card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:6px}.camera-name{font-size:1rem}.meta{font-size:.82rem}.status{border-radius:999px;padding:4px 8px;font-size:.7rem;font-weight:800;background:#173425;color:#a7f3c1}.status.bad{background:#3d1e24;color:#ffb7b7}.status.untested{background:#3b321c;color:#ffe09a}
-    .workspace{height:calc(100vh - 132px);min-height:560px;max-height:760px;display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,410px);gap:10px;border-top:1px solid var(--border);padding-top:8px}
-    .feed-panel,.control-panel{min-height:0}.feed-panel{display:grid;grid-template-rows:auto minmax(0,1fr);gap:6px}.section-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.toggle{display:flex;gap:7px;align-items:center;color:var(--muted);font-size:.85rem}
-    .feed-box,.feed-placeholder{min-height:0;height:100%;border:1px solid var(--border);border-radius:10px;background:#05080d;display:flex;align-items:center;justify-content:center;overflow:hidden}.feed-placeholder{border-style:dashed;color:var(--muted);padding:20px;text-align:center}.feed-box img{width:100%;height:100%;object-fit:contain}
-    .control-panel{display:flex;flex-direction:column;gap:9px;padding-left:10px;border-left:1px solid var(--border);overflow:visible}.control-section+.control-section{border-top:1px solid var(--border);padding-top:9px}.control-section h3{font-size:1rem}.controls{display:grid;grid-template-columns:repeat(3,54px);grid-template-rows:repeat(3,40px);justify-content:center;gap:5px;margin:7px 0}.ptz{font-size:1.05rem;font-weight:800}.up{grid-column:2}.left{grid-column:1;grid-row:2}.stop{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}.zoom{display:flex;justify-content:center;gap:7px}.preset-row{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}.preset-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}.preset-edit{display:grid;grid-template-columns:1fr;gap:6px;margin-top:6px}
-    .evidence-panel{height:360px;margin-top:10px;border-top:1px solid var(--border);padding-top:8px;display:grid;grid-template-rows:auto minmax(0,1fr)}.tabs{display:flex;gap:4px}.tab{border-bottom-left-radius:0;border-bottom-right-radius:0}.tab.active{border-color:var(--accent);background:#203455}.tab-panel{display:none;min-height:0;border:1px solid var(--border);border-radius:0 8px 8px 8px;background:#05080d}.tab-panel.active{display:grid;grid-template-rows:auto minmax(0,1fr)}.panel-toolbar{display:flex;justify-content:space-between;align-items:center;padding:7px 8px;border-bottom:1px solid var(--border)}.console{margin:0;min-height:0;overflow:auto;padding:9px;font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;user-select:text}.diagnostics-time{color:var(--muted);font-size:.78rem}
-    .caps{display:flex;flex-wrap:wrap;gap:6px}.preset-caps{margin-top:10px;padding-top:9px;border-top:1px solid var(--border)}.cap{border:1px solid var(--border);border-radius:7px;padding:4px 7px;font-size:.76rem;color:#c5d2e5}.cap.off{opacity:.42;text-decoration:line-through}.message{min-height:1.2em;font-size:.84rem;color:var(--muted)}.message.ok{color:#a7f3c1}.message.bad,.error{color:#ffc1c1}.error{padding:8px;border:1px solid #66303a;border-radius:8px;background:#381d23}.footer-row{display:flex;justify-content:flex-end;gap:10px;align-items:center;margin-top:8px}.empty{color:var(--muted);padding:18px}
-    @media(max-width:1000px){.workspace{grid-template-columns:minmax(0,1fr) minmax(330px,370px)}}
-    @media(max-width:820px){.workspace{height:auto;max-height:none;min-height:0;grid-template-columns:1fr}.feed-box,.feed-placeholder{height:55vh;min-height:300px}.control-panel{border-left:0;border-top:1px solid var(--border);padding:10px 0 0}.evidence-panel{height:320px}}
-    @media(max-width:620px){header{align-items:flex-start;flex-direction:column}.selector-wrap{width:100%}#camera-selector{width:100%}.feed-box,.feed-placeholder{height:42vh;min-height:230px}}
-  </style>
-</head>
-<body>
-<div class="shell">
-  <header>
-    <div><h1>ONVIF Camera Control</h1><div class="subtitle">Per-camera proxy validation</div></div>
-    <div class="selector-wrap"><label for="camera-selector">Camera</label><select id="camera-selector" disabled><option>Loading cameras…</option></select></div>
-  </header>
-  <main id="active-camera" class="empty">Loading cameras…</main>
-</div>
-<script>
-const selector=document.getElementById('camera-selector'),active=document.getElementById('active-camera');
-const messages=new Map(),presetCache=new Map(),diagnosticsCache=new Map();let cameras=[],selectedId=localStorage.getItem('multicam-active-camera')||'',feedTimer=null,logTimer=null,renderedLogs='',activeTab='console';
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const cap=(n,e)=>`<span class="cap${e?'':' off'}">${esc(n)}</span>`;const currentCamera=()=>cameras.find(c=>c.id===selectedId);
-function renderSelector(){if(!cameras.length){selector.innerHTML='<option>No configured cameras</option>';selector.disabled=true;active.className='empty';active.textContent='No configured cameras were returned by the proxy.';return}selector.innerHTML=cameras.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');if(!cameras.some(c=>c.id===selectedId))selectedId=cameras[0].id;selector.value=selectedId;selector.disabled=false}
-function presetLabel(p){const pt=p.position?.pan_tilt||{},z=p.position?.zoom||{};const coords=[pt.x!=null?`x=${pt.x}`:'',pt.y!=null?`y=${pt.y}`:'',z.x!=null?`z=${z.x}`:''].filter(Boolean).join(', ');return `${p.name||'(unnamed)'} [${p.token}]${coords?` — ${coords}`:''}`}
-function presetOptions(camera){const list=presetCache.get(camera.id)||[];if(!list.length)return '<option value="">Load presets first</option>';return '<option value="">Select a saved position</option>'+list.map(p=>`<option value="${esc(p.token)}" data-name="${esc(p.name||'')}">${esc(presetLabel(p))}</option>`).join('')}
-function syncPresetName(){const s=document.getElementById('preset-selector'),n=document.getElementById('preset-name');if(!s||!n)return;const o=s.options[s.selectedIndex];n.value=s.value?(o?.dataset.name||''):'';n.disabled=!s.value;const b=active.querySelector('[data-command="save-preset"]');if(b)b.disabled=!s.value}
-function updateMessage(id){if(id!==selectedId)return;const e=active.querySelector('.message'),m=messages.get(id);if(!e)return;e.className=`message ${m?.ok?'ok':m?'bad':''}`;e.textContent=m?m.text:''}
-function diagnosticsMarkup(id){const d=diagnosticsCache.get(id);return d?esc(JSON.stringify(d,null,2)):'Run read-only diagnostics to query the selected camera.'}
-function renderActive(){const c=currentCamera();if(!c)return;const state=c.connection_state||(c.available===false?'unavailable':'available'),caps=c.capabilities||{},disabled=c.available===false||!caps.pan_tilt,m=messages.get(c.id),diag=diagnosticsCache.get(c.id);active.className='';active.innerHTML=`<section class="card">
-<div class="card-head"><div><h2 class="camera-name">${esc(c.name)}</h2><div class="meta">${esc(c.driver)} · ${esc(c.host)} · ${esc(c.listen||'')}</div></div><span class="status ${state==='unavailable'?'bad':state==='untested'?'untested':''}">${esc(state)}</span></div>
-<div class="workspace">
-  <div class="feed-panel"><div class="section-head"><div><h3>Live feed</h3><div class="hint">Opt-in snapshot feed</div></div><label class="toggle"><input id="feed-toggle" type="checkbox" ${c.feed_enabled?'checked':''} ${c.feed_supported?'':'disabled'}> Enabled</label></div>${c.feed_enabled?`<div class="feed-box"><img id="feed-image" alt="${esc(c.name)} live snapshot"></div>`:`<div class="feed-placeholder">Enable the live feed to observe PTZ, zoom, and preset operations.</div>`}</div>
-  <div class="control-panel">
-    <div class="control-section"><h3>Pan / tilt</h3><div class="controls"><button class="ptz up" data-command="move" data-tilt="1" ${disabled?'disabled':''}>↑</button><button class="ptz left" data-command="move" data-pan="-1" ${disabled?'disabled':''}>←</button><button class="ptz stop" data-command="stop" ${disabled?'disabled':''}>■</button><button class="ptz right" data-command="move" data-pan="1" ${disabled?'disabled':''}>→</button><button class="ptz down" data-command="move" data-tilt="-1" ${disabled?'disabled':''}>↓</button></div></div>
-    <div class="control-section"><h3>Zoom</h3><div class="zoom"><button data-command="zoom" data-direction="out" ${caps.zoom?'':'disabled'}>Zoom out</button><button data-command="zoom" data-direction="in" ${caps.zoom?'':'disabled'}>Zoom in</button></div></div>
-    <div class="control-section"><div class="section-head"><h3>Presets</h3><button data-command="load-presets" ${caps.presets?'':'disabled'}>Load presets</button></div><div class="preset-row"><select id="preset-selector">${presetOptions(c)}</select><div class="preset-actions"><button data-command="goto-preset" ${caps.presets?'':'disabled'}>Go to</button><button data-command="refresh-presets" ${caps.presets?'':'disabled'}>Refresh</button></div></div><div class="preset-edit"><input id="preset-name" maxlength="40" placeholder="Preset name" disabled><button data-command="save-preset" disabled>Save current position</button></div><div class="caps preset-caps">${cap('Pan / tilt',!!caps.pan_tilt)}${cap('Zoom',!!caps.zoom)}${cap('Presets',!!caps.presets)}${cap('Live feed',!!c.feed_supported)}</div></div>
-  </div>
-</div>
-<div class="evidence-panel"><div class="tabs"><button class="tab ${activeTab==='console'?'active':''}" data-tab="console">Console log</button><button class="tab ${activeTab==='diagnostics'?'active':''}" data-tab="diagnostics">Camera diagnostics</button></div>
-  <div id="console-panel" class="tab-panel ${activeTab==='console'?'active':''}"><div class="panel-toolbar"><span></span><button id="clear-console" type="button">Clear view</button></div><pre id="console" class="console">Loading logs…</pre></div>
-  <div id="diagnostics-panel" class="tab-panel ${activeTab==='diagnostics'?'active':''}"><div class="panel-toolbar"><span id="diagnostics-time" class="diagnostics-time">${diag?`Collected ${esc(diag.collected_at||'')}`:'Not collected yet'}</span><button id="run-diagnostics" type="button">Run read-only diagnostics</button></div><pre id="diagnostics" class="console">${diagnosticsMarkup(c.id)}</pre></div>
-</div>
-<div class="footer-row"><div class="message ${m?.ok?'ok':m?'bad':''}">${m?esc(m.text):''}</div></div>${c.error?`<div class="error">${esc(c.error)}</div>`:''}
-</section>`;syncFeedTimer(c);syncLogTimer();syncPresetName()}
-function syncFeedTimer(c){if(feedTimer)clearInterval(feedTimer);feedTimer=null;if(!c.feed_enabled)return;const refresh=()=>{const i=document.getElementById('feed-image');if(i)i.src=`/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg?_=${Date.now()}`};refresh();feedTimer=setInterval(refresh,1500)}
-async function loadLogs(){const box=document.getElementById('console');if(!box)return;try{const r=await fetch(`/api/cameras/${encodeURIComponent(selectedId)}/logs`,{cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);const text=(d.entries||[]).map(e=>`${e.timestamp} [${e.level}] ${e.message}`).join('\n');if(text===renderedLogs)return;const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<24;box.textContent=text;renderedLogs=text;if(nearBottom)box.scrollTop=box.scrollHeight}catch(e){box.textContent='Unable to load logs: '+e.message}}
-function syncLogTimer(){if(logTimer)clearInterval(logTimer);renderedLogs='';loadLogs();logTimer=setInterval(loadLogs,1000)}
-async function runDiagnostics(){const button=document.getElementById('run-diagnostics'),box=document.getElementById('diagnostics'),time=document.getElementById('diagnostics-time');if(!button||!box)return;button.disabled=true;box.textContent='Collecting camera-reported ONVIF attributes…';try{const d=await post('diagnostics');diagnosticsCache.set(selectedId,d.result);box.textContent=JSON.stringify(d.result,null,2);if(time)time.textContent=`Collected ${d.result.collected_at||''}`;messages.set(selectedId,{ok:true,text:'Diagnostics completed'});updateMessage(selectedId)}catch(e){box.textContent='Diagnostics failed: '+e.message;messages.set(selectedId,{ok:false,text:e.message});updateMessage(selectedId)}finally{button.disabled=false}}
-async function loadCameras(render=true){const r=await fetch('/api/cameras',{cache:'no-store'});if(!r.ok)throw new Error(`Status request failed: HTTP ${r.status}`);const d=await r.json();if(!Array.isArray(d))throw new Error('Status response was not a camera list');cameras=d;renderSelector();if(render)renderActive()}
-async function post(command,payload={}){const r=await fetch(`/api/cameras/${encodeURIComponent(selectedId)}/${command}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);return d}
-async function loadPresets(){const r=await fetch(`/api/cameras/${encodeURIComponent(selectedId)}/presets`,{cache:'no-store'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);presetCache.set(selectedId,d.presets||[]);const s=document.getElementById('preset-selector');if(s){s.innerHTML=presetOptions(currentCamera());syncPresetName()}}
-async function runAction(b){const id=selectedId,cmd=b.dataset.command,was=b.disabled;b.disabled=true;messages.set(id,{ok:true,text:'Working…'});updateMessage(id);try{if(cmd==='move')await post('move',{pan:Number(b.dataset.pan||0),tilt:Number(b.dataset.tilt||0)});else if(cmd==='stop')await post('stop');else if(cmd==='zoom')await post('zoom',{direction:b.dataset.direction});else if(cmd==='load-presets'||cmd==='refresh-presets')await loadPresets();else if(cmd==='goto-preset'){const t=document.getElementById('preset-selector')?.value;if(!t)throw new Error('Select a preset');const r=await fetch(`/api/cameras/${encodeURIComponent(id)}/presets/${encodeURIComponent(t)}/goto`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`)}else if(cmd==='save-preset'){const t=document.getElementById('preset-selector')?.value,n=document.getElementById('preset-name')?.value||'';if(!t)throw new Error('Select the preset slot to overwrite');const r=await fetch(`/api/cameras/${encodeURIComponent(id)}/presets/${encodeURIComponent(t)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);await loadPresets()}messages.set(id,{ok:true,text:`${cmd} accepted at ${new Date().toLocaleTimeString()}`})}catch(e){messages.set(id,{ok:false,text:e.message})}finally{b.disabled=was;updateMessage(id);await loadCameras(false).catch(()=>{})}}
-active.addEventListener('click',e=>{const tab=e.target.closest('.tab[data-tab]');if(tab){activeTab=tab.dataset.tab;active.querySelectorAll('.tab,.tab-panel').forEach(x=>x.classList.remove('active'));tab.classList.add('active');document.getElementById(`${activeTab}-panel`)?.classList.add('active');return}if(e.target.id==='clear-console'){const box=document.getElementById('console');if(box){box.textContent='';renderedLogs=''}return}if(e.target.id==='run-diagnostics'){runDiagnostics();return}const b=e.target.closest('button[data-command]');if(b&&!b.disabled)runAction(b)});
-active.addEventListener('change',async e=>{if(e.target.id==='preset-selector'){syncPresetName();return}if(e.target.id!=='feed-toggle')return;try{await post('feed',{enabled:e.target.checked});messages.set(selectedId,{ok:true,text:`Live feed ${e.target.checked?'enabled':'disabled'}`})}catch(x){messages.set(selectedId,{ok:false,text:x.message})}await loadCameras()});
-selector.addEventListener('change',()=>{selectedId=selector.value;localStorage.setItem('multicam-active-camera',selectedId);renderActive()});
-loadCameras().catch(e=>{selector.innerHTML='<option>Camera list unavailable</option>';selector.disabled=true;active.className='error';active.textContent=e.message});setInterval(()=>loadCameras(false).catch(()=>{}),10000);
-</script>
-</body>
-</html>'''
+from pathlib import Path
+
+_WEB_ROOT = Path(__file__).with_name("web")
+
+
+def load_index() -> bytes:
+    return (_WEB_ROOT / "index.html").read_bytes()
+
+
+def load_stylesheet() -> bytes:
+    return (_WEB_ROOT / "app.css").read_bytes()
+
+
+def load_script() -> bytes:
+    return (_WEB_ROOT / "app.js").read_bytes()

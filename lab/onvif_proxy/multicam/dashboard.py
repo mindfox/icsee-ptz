@@ -10,7 +10,7 @@ HTML = r'''<!doctype html>
     :root { color-scheme:dark; --bg:#0b1220; --panel:#111a2b; --panel2:#172236; --border:#2a3952; --text:#edf3ff; --muted:#9aa9bf; --accent:#5ea0ff; }
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
-    .shell { max-width:900px; margin:auto; padding:28px 20px 50px; }
+    .shell { max-width:1280px; margin:auto; padding:28px 20px 50px; }
     header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }
     h1,h2,h3 { margin:0; }
     .subtitle,.meta,.hint { color:var(--muted); }
@@ -28,19 +28,24 @@ HTML = r'''<!doctype html>
     .status { border-radius:999px; padding:6px 10px; font-size:.75rem; font-weight:800; background:#173425; color:#a7f3c1; height:max-content; }
     .status.bad { background:#3d1e24; color:#ffb7b7; }
     .status.untested { background:#3b321c; color:#ffe09a; }
-    .section { border-top:1px solid var(--border); margin-top:18px; padding-top:18px; }
+    .workspace { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(320px,.8fr); gap:18px; align-items:start; margin-top:18px; }
+    .feed-panel,.control-panel { border-top:1px solid var(--border); padding-top:18px; }
+    .control-panel { display:flex; flex-direction:column; gap:18px; }
+    .control-section + .control-section { border-top:1px solid var(--border); padding-top:18px; }
     .section-head { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:12px; }
     .controls { display:grid; grid-template-columns:repeat(3,64px); grid-template-rows:repeat(3,52px); justify-content:center; gap:8px; margin:16px 0; }
     .ptz { font-size:1.25rem; font-weight:800; }
     .up{grid-column:2}.left{grid-column:1;grid-row:2}.stop{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}
     .zoom { display:flex; justify-content:center; gap:10px; }
-    .feed-box { display:none; margin-top:12px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:#05080d; min-height:220px; align-items:center; justify-content:center; }
+    .feed-box { display:none; margin-top:12px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:#05080d; min-height:360px; align-items:center; justify-content:center; }
     .feed-box.enabled { display:flex; }
-    .feed-box img { display:block; max-width:100%; width:100%; height:auto; }
+    .feed-box img { display:block; width:100%; height:auto; max-height:72vh; object-fit:contain; }
+    .feed-placeholder { margin-top:12px; min-height:360px; border:1px dashed var(--border); border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; padding:24px; }
     .toggle { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:.9rem; }
-    .preset-row { display:grid; grid-template-columns:minmax(160px,1fr) auto auto; gap:8px; }
-    .preset-edit { display:grid; grid-template-columns:minmax(160px,1fr) auto; gap:8px; margin-top:8px; }
-    .caps { display:flex; flex-wrap:wrap; gap:7px; margin-top:16px; }
+    .preset-row { display:grid; grid-template-columns:minmax(150px,1fr) auto; gap:8px; }
+    .preset-actions { display:flex; gap:8px; }
+    .preset-edit { display:grid; grid-template-columns:minmax(150px,1fr); gap:8px; margin-top:8px; }
+    .caps { display:flex; flex-wrap:wrap; gap:7px; margin-top:18px; }
     .cap { border:1px solid var(--border); border-radius:8px; padding:5px 8px; font-size:.8rem; color:#c5d2e5; }
     .cap.off { opacity:.42; text-decoration:line-through; }
     .message { min-height:1.4em; margin-top:14px; font-size:.88rem; color:var(--muted); }
@@ -48,7 +53,8 @@ HTML = r'''<!doctype html>
     .message.bad,.error { color:#ffc1c1; }
     .error { margin-top:12px; padding:10px; border:1px solid #66303a; border-radius:9px; background:#381d23; word-break:break-word; }
     .empty { color:var(--muted); padding:18px 0; }
-    @media(max-width:620px){header{flex-direction:column}.selector-wrap{width:100%}.selector-wrap label{text-align:left}.selector-wrap select{width:100%;max-width:none}.preset-row,.preset-edit{grid-template-columns:1fr}}
+    @media(max-width:900px){.workspace{grid-template-columns:1fr}.feed-box,.feed-placeholder{min-height:280px}.control-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.control-section + .control-section{border-top:0;padding-top:0}.control-section.presets{grid-column:1/-1;border-top:1px solid var(--border);padding-top:18px}}
+    @media(max-width:620px){header{flex-direction:column}.selector-wrap{width:100%}.selector-wrap label{text-align:left}.selector-wrap select{width:100%;max-width:none}.control-panel{display:flex}.control-section + .control-section{border-top:1px solid var(--border);padding-top:18px}.preset-row,.preset-edit{grid-template-columns:1fr}.preset-actions{display:grid;grid-template-columns:1fr 1fr}.feed-box,.feed-placeholder{min-height:220px}}
   </style>
 </head>
 <body>
@@ -110,41 +116,49 @@ function renderActive() {
       <span class="status ${state === 'unavailable' ? 'bad' : state === 'untested' ? 'untested' : ''}">${esc(state)}</span>
     </div>
 
-    <div class="section">
-      <div class="section-head"><h3>Live feed</h3><label class="toggle"><input id="feed-toggle" type="checkbox" ${camera.feed_enabled?'checked':''} ${camera.feed_supported?'':'disabled'}> Enabled</label></div>
-      <div class="hint">Snapshot feed is opt-in and disabled by default.</div>
-      <div id="feed-box" class="feed-box ${camera.feed_enabled?'enabled':''}">${camera.feed_enabled ? `<img id="feed-image" alt="${esc(camera.name)} live snapshot">` : ''}</div>
-    </div>
-
-    <div class="section">
-      <h3>Pan / tilt</h3>
-      <div class="controls">
-        <button type="button" class="ptz up" data-command="move" data-tilt="1" ${disabled?'disabled':''}>↑</button>
-        <button type="button" class="ptz left" data-command="move" data-pan="-1" ${disabled?'disabled':''}>←</button>
-        <button type="button" class="ptz stop" data-command="stop" ${disabled?'disabled':''}>■</button>
-        <button type="button" class="ptz right" data-command="move" data-pan="1" ${disabled?'disabled':''}>→</button>
-        <button type="button" class="ptz down" data-command="move" data-tilt="-1" ${disabled?'disabled':''}>↓</button>
+    <div class="workspace">
+      <div class="feed-panel">
+        <div class="section-head"><h3>Live feed</h3><label class="toggle"><input id="feed-toggle" type="checkbox" ${camera.feed_enabled?'checked':''} ${camera.feed_supported?'':'disabled'}> Enabled</label></div>
+        <div class="hint">Snapshot feed is opt-in and disabled by default.</div>
+        ${camera.feed_enabled
+          ? `<div id="feed-box" class="feed-box enabled"><img id="feed-image" alt="${esc(camera.name)} live snapshot"></div>`
+          : `<div class="feed-placeholder">Enable the live feed to view the camera while operating the controls.</div>`}
       </div>
-    </div>
 
-    <div class="section">
-      <h3>Zoom</h3>
-      <div class="zoom">
-        <button type="button" data-command="zoom" data-direction="out" ${caps.zoom?'':'disabled'}>Zoom out</button>
-        <button type="button" data-command="zoom" data-direction="in" ${caps.zoom?'':'disabled'}>Zoom in</button>
-      </div>
-    </div>
+      <div class="control-panel">
+        <div class="control-section">
+          <h3>Pan / tilt</h3>
+          <div class="controls">
+            <button type="button" class="ptz up" data-command="move" data-tilt="1" ${disabled?'disabled':''}>↑</button>
+            <button type="button" class="ptz left" data-command="move" data-pan="-1" ${disabled?'disabled':''}>←</button>
+            <button type="button" class="ptz stop" data-command="stop" ${disabled?'disabled':''}>■</button>
+            <button type="button" class="ptz right" data-command="move" data-pan="1" ${disabled?'disabled':''}>→</button>
+            <button type="button" class="ptz down" data-command="move" data-tilt="-1" ${disabled?'disabled':''}>↓</button>
+          </div>
+        </div>
 
-    <div class="section">
-      <div class="section-head"><h3>Presets</h3><button type="button" data-command="load-presets" ${caps.presets?'':'disabled'}>Load presets</button></div>
-      <div class="preset-row">
-        <select id="preset-selector">${presetOptions(camera)}</select>
-        <button type="button" data-command="goto-preset" ${caps.presets?'':'disabled'}>Go to</button>
-        <button type="button" data-command="refresh-presets" ${caps.presets?'':'disabled'}>Refresh</button>
-      </div>
-      <div class="preset-edit">
-        <input id="preset-name" maxlength="40" placeholder="Preset name">
-        <button type="button" data-command="save-preset" ${caps.presets?'':'disabled'}>Save current position</button>
+        <div class="control-section">
+          <h3>Zoom</h3>
+          <div class="zoom">
+            <button type="button" data-command="zoom" data-direction="out" ${caps.zoom?'':'disabled'}>Zoom out</button>
+            <button type="button" data-command="zoom" data-direction="in" ${caps.zoom?'':'disabled'}>Zoom in</button>
+          </div>
+        </div>
+
+        <div class="control-section presets">
+          <div class="section-head"><h3>Presets</h3><button type="button" data-command="load-presets" ${caps.presets?'':'disabled'}>Load presets</button></div>
+          <div class="preset-row">
+            <select id="preset-selector">${presetOptions(camera)}</select>
+            <div class="preset-actions">
+              <button type="button" data-command="goto-preset" ${caps.presets?'':'disabled'}>Go to</button>
+              <button type="button" data-command="refresh-presets" ${caps.presets?'':'disabled'}>Refresh</button>
+            </div>
+          </div>
+          <div class="preset-edit">
+            <input id="preset-name" maxlength="40" placeholder="Preset name">
+            <button type="button" data-command="save-preset" ${caps.presets?'':'disabled'}>Save current position</button>
+          </div>
+        </div>
       </div>
     </div>
 

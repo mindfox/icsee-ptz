@@ -102,6 +102,18 @@ function presetOptions(camera) {
   if (!presets.length) return '<option value="">Load presets first</option>';
   return presets.map(p => `<option value="${esc(p.token)}">${esc(p.name || `Preset ${p.token}`)}</option>`).join('');
 }
+function updateMessage(id) {
+  if (id !== selectedId) return;
+  const element = active.querySelector('.message');
+  if (!element) return;
+  const message = messages.get(id);
+  element.className = `message ${message?.ok ? 'ok' : message ? 'bad' : ''}`;
+  element.textContent = message ? message.text : '';
+}
+function updatePresetSelector(camera) {
+  const element = document.getElementById('preset-selector');
+  if (element && camera.id === selectedId) element.innerHTML = presetOptions(camera);
+}
 function renderActive() {
   const camera = currentCamera();
   if (!camera) return;
@@ -179,14 +191,14 @@ function syncFeedTimer(camera) {
   refreshImage();
   feedTimer = setInterval(refreshImage, 1500);
 }
-async function loadCameras() {
+async function loadCameras(render=true) {
   const response = await fetch('/api/cameras', {cache:'no-store'});
   if (!response.ok) throw new Error(`Status request failed: HTTP ${response.status}`);
   const data = await response.json();
   if (!Array.isArray(data)) throw new Error('Status response was not a camera list');
   cameras = data;
   renderSelector();
-  renderActive();
+  if (render) renderActive();
 }
 async function post(command, payload={}) {
   const id = selectedId;
@@ -202,14 +214,17 @@ async function loadPresets() {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   presetCache.set(selectedId, data.presets || []);
-  renderActive();
+  const camera = currentCamera();
+  if (camera) updatePresetSelector(camera);
 }
 async function runAction(button) {
   const id = selectedId;
+  const command = button.dataset.command;
+  const originalDisabled = button.disabled;
+  button.disabled = true;
+  messages.set(id, {ok:true, text:'Working…'});
+  updateMessage(id);
   try {
-    messages.set(id, {ok:true, text:'Working…'});
-    renderActive();
-    const command = button.dataset.command;
     if (command === 'move') await post('move', {pan:Number(button.dataset.pan||0), tilt:Number(button.dataset.tilt||0)});
     else if (command === 'stop') await post('stop');
     else if (command === 'zoom') await post('zoom', {direction:button.dataset.direction});
@@ -228,8 +243,11 @@ async function runAction(button) {
     messages.set(id, {ok:true, text:`${command} accepted at ${new Date().toLocaleTimeString()}`});
   } catch (error) {
     messages.set(id, {ok:false, text:error.message});
+  } finally {
+    button.disabled = originalDisabled;
+    updateMessage(id);
+    await loadCameras(false).catch(() => {});
   }
-  await loadCameras();
 }
 active.addEventListener('click', event => {
   const button = event.target.closest('button[data-command]');
@@ -257,7 +275,7 @@ loadCameras().catch(error => {
   active.className = 'error';
   active.textContent = error.message;
 });
-setInterval(() => loadCameras().catch(() => {}), 10000);
+setInterval(() => loadCameras(false).catch(() => {}), 10000);
 </script>
 </body>
 </html>'''

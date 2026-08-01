@@ -28,6 +28,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 return self.send_payload(200, {"entries": self.server.runtime.get_logs(unquote(parts[2]))})
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "presets":
                 return self.send_payload(200, {"presets": self.server.runtime.presets(unquote(parts[2]))})
+            if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "ptz-status":
+                return self.send_payload(200, {"status": self.server.runtime.ptz_status(unquote(parts[2]))})
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "snapshot.jpg":
                 return self.send_payload(200, self.server.runtime.snapshot(unquote(parts[2])), "image/jpeg")
             if path == "/health":
@@ -63,10 +65,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 result = {"enabled": self.server.runtime.set_feed(camera_id, bool(payload.get("enabled", False)))}
             elif command == "diagnostics" and len(parts) == 4:
                 result = self.server.runtime.diagnostics(camera_id)
+            elif command == "home" and len(parts) == 5 and parts[4] == "goto":
+                result = self.server.runtime.goto_home(camera_id)
+            elif command == "home" and len(parts) == 5 and parts[4] == "set":
+                result = self.server.runtime.set_home(camera_id)
             elif command == "presets" and len(parts) == 5:
                 result = self.server.runtime.set_preset(camera_id, unquote(parts[4]), str(payload.get("name", "")).strip())
             elif command == "presets" and len(parts) == 6 and parts[5] == "goto":
                 result = self.server.runtime.goto_preset(camera_id, unquote(parts[4]), int(payload.get("speed_x", 1)), int(payload.get("speed_y", 1)))
+            elif command == "presets" and len(parts) == 6 and parts[5] == "remove":
+                result = self.server.runtime.remove_preset(camera_id, unquote(parts[4]))
             else:
                 return self.send_payload(404, {"error": "unknown command"})
             self.send_payload(200, {"status": "ok", "result": result})

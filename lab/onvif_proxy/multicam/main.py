@@ -4,10 +4,9 @@ import argparse
 import signal
 import threading
 
-from . import runtime as runtime_module
 from .config import load_config
-from .dashboard import HTML
-from .runtime import CameraRuntime, start_web
+from .runtime import CameraRuntime
+from .web_server import start_web
 
 
 def main() -> None:
@@ -15,8 +14,6 @@ def main() -> None:
     parser.add_argument("--config", default="/config/cameras.yaml")
     parser.add_argument("--proxy-script", default="/app/proxy.py")
     args = parser.parse_args()
-
-    runtime_module.HTML = HTML
 
     runtime = CameraRuntime(load_config(args.config), args.proxy_script)
     runtime.start()

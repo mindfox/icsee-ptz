@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 import requests
@@ -144,49 +146,32 @@ class ProxyOnvifClient:
             node_token = profile.get("ptz_node_token")
             if not config_token:
                 raise RuntimeError("selected media profile has no PTZ configuration token")
-
             config_root = self._query_ptz(
                 "GetConfiguration",
                 f"<tptz:GetConfiguration><tptz:PTZConfigurationToken>{escape(config_token)}</tptz:PTZConfigurationToken></tptz:GetConfiguration>",
             )
             config_node = config_root.find(f".//{{{TPTZ_NS}}}PTZConfiguration")
             configuration = element_to_data(config_node) if config_node is not None else element_to_data(config_root)
-
             if not node_token and config_node is not None:
                 node_element = config_node.find(f"{{{TT_NS}}}NodeToken")
                 node_token = (node_element.text or "").strip() if node_element is not None else None
             if not node_token:
                 raise RuntimeError("PTZ configuration has no node token")
-
             node_root = self._query_ptz(
                 "GetNode",
                 f"<tptz:GetNode><tptz:NodeToken>{escape(node_token)}</tptz:NodeToken></tptz:GetNode>",
             )
             node_element = node_root.find(f".//{{{TPTZ_NS}}}PTZNode")
             node = element_to_data(node_element) if node_element is not None else element_to_data(node_root)
-
             options_root = self._query_ptz(
                 "GetConfigurationOptions",
                 f"<tptz:GetConfigurationOptions><tptz:ConfigurationToken>{escape(config_token)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>",
             )
             options_element = options_root.find(f".//{{{TPTZ_NS}}}PTZConfigurationOptions")
             options = element_to_data(options_element) if options_element is not None else element_to_data(options_root)
-
             return {
                 "collected_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                "camera": {
-                    "id": self.camera.camera_id,
-                    "name": self.camera.name,
-                    "host": self.camera.host,
-                    "listener": self.base,
-                },
-                "sources": {
-                    "profile": "GetProfiles",
-                    "configuration": "GetConfiguration",
-                    "node": "GetNode",
-                    "configuration_options": "GetConfigurationOptions",
-                    "status": "GetStatus",
-                },
+                "camera": {"id": self.camera.camera_id, "name": self.camera.name, "host": self.camera.host, "listener": self.base},
                 "profile": profile,
                 "configuration": configuration,
                 "node": node,
@@ -199,15 +184,13 @@ class ProxyOnvifClient:
             token = self._profile()
             move = self._envelope(
                 f'<tptz:ContinuousMove><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken>'
-                f'<tptz:Velocity><tt:Zoom x="{zoom:g}" space="{ZOOM_VELOCITY_SPACE}"/>'
-                f'</tptz:Velocity></tptz:ContinuousMove>',
+                f'<tptz:Velocity><tt:Zoom x="{zoom:g}" space="{ZOOM_VELOCITY_SPACE}"/></tptz:Velocity></tptz:ContinuousMove>',
                 f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"',
             )
             self._post(self.ptz_url, f"{TPTZ_NS}/ContinuousMove", move)
             time.sleep(max(0.02, seconds))
             stop = self._envelope(
-                f'<tptz:Stop><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken>'
-                f'<tptz:PanTilt>false</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>',
+                f'<tptz:Stop><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken><tptz:PanTilt>false</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>',
                 f'xmlns:tptz="{TPTZ_NS}"',
             )
             self._post(self.ptz_url, f"{TPTZ_NS}/Stop", stop)
@@ -219,10 +202,7 @@ class ProxyOnvifClient:
             root = self._post(
                 self.ptz_url,
                 f"{TPTZ_NS}/GetPresets",
-                self._envelope(
-                    f"<tptz:GetPresets><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken></tptz:GetPresets>",
-                    f'xmlns:tptz="{TPTZ_NS}"',
-                ),
+                self._envelope(f"<tptz:GetPresets><tptz:ProfileToken>{escape(token)}</tptz:ProfileToken></tptz:GetPresets>", f'xmlns:tptz="{TPTZ_NS}"'),
             )
         result = []
         for item in root.findall(f".//{{{TPTZ_NS}}}Preset"):
@@ -236,15 +216,8 @@ class ProxyOnvifClient:
                     "token": preset_token,
                     "name": (name_node.text or "").strip() if name_node is not None else "",
                     "position": {
-                        "pan_tilt": {
-                            "x": pan_tilt.attrib.get("x") if pan_tilt is not None else None,
-                            "y": pan_tilt.attrib.get("y") if pan_tilt is not None else None,
-                            "space": pan_tilt.attrib.get("space") if pan_tilt is not None else None,
-                        },
-                        "zoom": {
-                            "x": zoom.attrib.get("x") if zoom is not None else None,
-                            "space": zoom.attrib.get("space") if zoom is not None else None,
-                        },
+                        "pan_tilt": {"x": pan_tilt.attrib.get("x") if pan_tilt is not None else None, "y": pan_tilt.attrib.get("y") if pan_tilt is not None else None, "space": pan_tilt.attrib.get("space") if pan_tilt is not None else None},
+                        "zoom": {"x": zoom.attrib.get("x") if zoom is not None else None, "space": zoom.attrib.get("space") if zoom is not None else None},
                     },
                     "raw": element_to_data(item),
                 })
@@ -257,34 +230,19 @@ class ProxyOnvifClient:
             root = self._post(
                 self.ptz_url,
                 f"{TPTZ_NS}/SetPreset",
-                self._envelope(
-                    f"<tptz:SetPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken>"
-                    f"{name_xml}<tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken></tptz:SetPreset>",
-                    f'xmlns:tptz="{TPTZ_NS}"',
-                ),
+                self._envelope(f"<tptz:SetPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken>{name_xml}<tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken></tptz:SetPreset>", f'xmlns:tptz="{TPTZ_NS}"'),
             )
         token_node = root.find(f".//{{{TPTZ_NS}}}PresetToken")
-        return {
-            "requested_token": preset_token,
-            "preset_token": token_node.text if token_node is not None else preset_token,
-            "name": name,
-        }
+        return {"requested_token": preset_token, "preset_token": token_node.text if token_node is not None else preset_token, "name": name}
 
     def goto_preset(self, preset_token: str, speed_x: int = 1, speed_y: int = 1) -> dict:
         with self.lock:
             profile = self._profile()
-            speed = (
-                f'<tptz:Speed><tt:PanTilt x="{speed_x}" y="{speed_y}" '
-                f'space="{PRESET_SPEED_SPACE}"/></tptz:Speed>'
-            )
+            speed = f'<tptz:Speed><tt:PanTilt x="{speed_x}" y="{speed_y}" space="{PRESET_SPEED_SPACE}"/></tptz:Speed>'
             self._post(
                 self.ptz_url,
                 f"{TPTZ_NS}/GotoPreset",
-                self._envelope(
-                    f"<tptz:GotoPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken>"
-                    f"<tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken>{speed}</tptz:GotoPreset>",
-                    f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"',
-                ),
+                self._envelope(f"<tptz:GotoPreset><tptz:ProfileToken>{escape(profile)}</tptz:ProfileToken><tptz:PresetToken>{escape(preset_token)}</tptz:PresetToken>{speed}</tptz:GotoPreset>", f'xmlns:tptz="{TPTZ_NS}" xmlns:tt="{TT_NS}"'),
             )
         return {"preset_token": preset_token, "speed_x": speed_x, "speed_y": speed_y}
 
@@ -292,9 +250,7 @@ class ProxyOnvifClient:
 class DvripSnapshotClient:
     def __init__(self, camera: CameraConfig):
         module_path = Path(str(camera.options.get("dvrip_module_path", "/opt/icsee_ptz/asyncio_dvrip.py")))
-        spec = importlib.util.spec_from_file_location(
-            f"icsee_asyncio_dvrip_{camera.camera_id}", module_path
-        )
+        spec = importlib.util.spec_from_file_location(f"icsee_asyncio_dvrip_{camera.camera_id}", module_path)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Unable to load DVRIP module from {module_path}")
         module = importlib.util.module_from_spec(spec)
@@ -307,12 +263,7 @@ class DvripSnapshotClient:
         self.lock = threading.Lock()
 
     async def _snapshot(self) -> bytes:
-        camera = self.camera_type(
-            self.host,
-            port=self.port,
-            user=self.username,
-            password=self.password,
-        )
+        camera = self.camera_type(self.host, port=self.port, user=self.username, password=self.password)
         try:
             if not await camera.login(asyncio.get_running_loop()):
                 raise RuntimeError("camera login failed")
@@ -326,3 +277,50 @@ class DvripSnapshotClient:
     def snapshot(self) -> bytes:
         with self.lock:
             return asyncio.run(self._snapshot())
+
+
+class RtspSnapshotClient:
+    """Capture one JPEG frame from a configured RTSP stream using ffmpeg."""
+
+    def __init__(self, camera: CameraConfig):
+        self.lock = threading.Lock()
+        self.timeout = float(camera.options.get("snapshot_timeout", 15))
+        self.ffmpeg = str(camera.options.get("ffmpeg_binary", "ffmpeg"))
+        port = int(camera.options.get("rtsp_port", 554))
+        path = str(camera.options.get("main_stream", "/stream1"))
+        if not path.startswith("/"):
+            path = "/" + path
+        username = quote(camera.username or "", safe="")
+        password = quote(camera.password or "", safe="")
+        auth = f"{username}:{password}@" if username or password else ""
+        self.url = f"rtsp://{auth}{camera.host}:{port}{path}"
+
+    def snapshot(self) -> bytes:
+        command = [
+            self.ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            self.url,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "pipe:1",
+        ]
+        with self.lock:
+            try:
+                result = subprocess.run(command, capture_output=True, timeout=self.timeout, check=False)
+            except FileNotFoundError as exc:
+                raise RuntimeError(f"ffmpeg binary not found: {self.ffmpeg}") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(f"RTSP snapshot timed out after {self.timeout:g}s") from exc
+        if result.returncode != 0 or not result.stdout:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()[-800:]
+            raise RuntimeError(f"ffmpeg snapshot failed ({result.returncode}): {detail}")
+        return result.stdout

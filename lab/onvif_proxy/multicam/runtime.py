@@ -35,21 +35,43 @@ class CameraRuntime:
                 self.feed_enabled[camera.camera_id] = False
                 if camera.driver == "icsee_onvif":
                     self.controls[camera.camera_id] = ProxyOnvifClient(camera)
-                    if bool(camera.options.get("live_feed", True)):
-                        self.snapshots[camera.camera_id] = DvripSnapshotClient(camera)
                 elif camera.driver == "tapo_c200":
                     self.controls[camera.camera_id] = driver
-                    if bool(camera.options.get("live_feed", True)):
-                        self.snapshots[camera.camera_id] = PersistentRtspFeed(
-                            camera,
-                            lambda level, message, camera_id=camera.camera_id: self.add_log(
-                                camera_id, level, message
-                            ),
-                        )
-                self.add_log(camera.camera_id, "INFO", f"Configured driver={camera.driver} host={camera.host} listener={camera.listen_host}:{camera.listen_port}")
+
+                self._configure_feed(camera)
+                self.add_log(
+                    camera.camera_id,
+                    "INFO",
+                    f"Configured driver={camera.driver} host={camera.host} "
+                    f"listener={camera.listen_host}:{camera.listen_port} "
+                    f"feed_source={camera.feed.source}",
+                )
             except Exception as exc:
                 self.errors[camera.camera_id] = f"{type(exc).__name__}: {exc}"
                 self.add_log(camera.camera_id, "ERROR", f"Driver initialization failed: {self.errors[camera.camera_id]}")
+
+    def _configure_feed(self, camera):
+        source = camera.feed.source
+        if source == "disabled":
+            return
+        if source in {"restream", "direct_rtsp"}:
+            self.snapshots[camera.camera_id] = PersistentRtspFeed(
+                camera,
+                lambda level, message, camera_id=camera.camera_id: self.add_log(
+                    camera_id, level, message
+                ),
+            )
+            if source == "direct_rtsp":
+                self.add_log(
+                    camera.camera_id,
+                    "WARN",
+                    "Direct RTSP feed adds another upstream camera session; restream is preferred",
+                )
+            return
+        if source == "dvrip":
+            self.snapshots[camera.camera_id] = DvripSnapshotClient(camera)
+            return
+        raise ValueError(f"unsupported feed source: {source}")
 
     def add_log(self, camera_id, level, message):
         timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
@@ -146,6 +168,7 @@ class CameraRuntime:
                 if camera.driver == "icsee_onvif" and not process_status.get(camera.camera_id, False):
                     item["available"] = False
                     item["error"] = "legacy proxy process is not running"
+                item["feed_source"] = camera.feed.source
                 item["feed_supported"] = camera.camera_id in self.snapshots
                 item["feed_enabled"] = self.feed_enabled.get(camera.camera_id, False)
                 snapshot = self.snapshots.get(camera.camera_id)
@@ -204,7 +227,8 @@ class CameraRuntime:
 
     def presets(self, camera_id):
         self.add_log(camera_id, "INFO", "ONVIF GetPresets requested")
-        result = self._control(camera_id).get_presets() if hasattr(self._control(camera_id), "get_presets") else self._control(camera_id).presets()
+        control = self._control(camera_id)
+        result = control.get_presets() if hasattr(control, "get_presets") else control.presets()
         self.add_log(camera_id, "INFO", f"ONVIF GetPresets returned count={len(result)}")
         return result
 
@@ -252,7 +276,7 @@ class CameraRuntime:
         return control.set_home()
 
     def set_feed(self, camera_id, enabled):
-        self._camera(camera_id)
+        camera = self._camera(camera_id)
         try:
             client = self.snapshots[camera_id]
         except KeyError as exc:
@@ -271,7 +295,7 @@ class CameraRuntime:
             if stop is not None:
                 stop()
         self.feed_enabled[camera_id] = enabled
-        self.add_log(camera_id, "INFO", f"Live feed {'enabled' if enabled else 'disabled'}")
+        self.add_log(camera_id, "INFO", f"Live feed {'enabled' if enabled else 'disabled'} source={camera.feed.source}")
         return enabled
 
     def snapshot(self, camera_id):

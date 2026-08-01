@@ -8,7 +8,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 from xml.sax.saxutils import escape
 
 import requests
@@ -86,6 +86,8 @@ class TapoOnvifProbe:
         self.device_candidates = list(dict.fromkeys(x for x in self.device_candidates if x))
         self.device_url = self.device_candidates[0]
         self.camera_time: datetime | None = None
+        self.session = requests.Session()
+        self.session.trust_env = False
 
     def security(self) -> str:
         nonce = os.urandom(20)
@@ -123,7 +125,7 @@ class TapoOnvifProbe:
         authenticated: bool = True,
         namespaces: str,
     ) -> ET.Element:
-        response = requests.post(
+        response = self.session.post(
             endpoint,
             data=self.envelope(body, authenticated, namespaces),
             headers={

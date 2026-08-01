@@ -10,15 +10,16 @@ HTML = r'''<!doctype html>
     :root { color-scheme:dark; --bg:#0b1220; --panel:#111a2b; --panel2:#172236; --border:#2a3952; --text:#edf3ff; --muted:#9aa9bf; --accent:#5ea0ff; }
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
-    .shell { max-width:760px; margin:auto; padding:28px 20px 50px; }
+    .shell { max-width:900px; margin:auto; padding:28px 20px 50px; }
     header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }
-    h1 { margin:0; font-size:2rem; }
-    .subtitle,.meta { color:var(--muted); }
+    h1,h2,h3 { margin:0; }
+    .subtitle,.meta,.hint { color:var(--muted); }
     .selector-wrap { min-width:210px; }
     .selector-wrap label { display:block; margin-bottom:5px; color:var(--muted); font-size:.78rem; text-align:right; }
-    select,button { border:1px solid var(--border); border-radius:9px; background:var(--panel2); color:var(--text); }
-    select { width:220px; max-width:42vw; padding:8px 10px; }
-    button { cursor:pointer; }
+    select,input,button { border:1px solid var(--border); border-radius:9px; background:var(--panel2); color:var(--text); }
+    select,input { padding:8px 10px; }
+    .selector-wrap select { width:220px; max-width:42vw; }
+    button { padding:8px 11px; cursor:pointer; }
     button:hover:not(:disabled) { border-color:var(--accent); }
     button:disabled { opacity:.35; cursor:not-allowed; }
     .card { border:1px solid var(--border); border-radius:16px; padding:20px; background:var(--panel); }
@@ -27,10 +28,19 @@ HTML = r'''<!doctype html>
     .status { border-radius:999px; padding:6px 10px; font-size:.75rem; font-weight:800; background:#173425; color:#a7f3c1; height:max-content; }
     .status.bad { background:#3d1e24; color:#ffb7b7; }
     .status.untested { background:#3b321c; color:#ffe09a; }
-    .controls { display:grid; grid-template-columns:repeat(3,64px); grid-template-rows:repeat(3,52px); justify-content:center; gap:8px; margin:22px 0 16px; }
+    .section { border-top:1px solid var(--border); margin-top:18px; padding-top:18px; }
+    .section-head { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:12px; }
+    .controls { display:grid; grid-template-columns:repeat(3,64px); grid-template-rows:repeat(3,52px); justify-content:center; gap:8px; margin:16px 0; }
     .ptz { font-size:1.25rem; font-weight:800; }
     .up{grid-column:2}.left{grid-column:1;grid-row:2}.stop{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}
-    .caps { display:flex; flex-wrap:wrap; gap:7px; }
+    .zoom { display:flex; justify-content:center; gap:10px; }
+    .feed-box { display:none; margin-top:12px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:#05080d; min-height:220px; align-items:center; justify-content:center; }
+    .feed-box.enabled { display:flex; }
+    .feed-box img { display:block; max-width:100%; width:100%; height:auto; }
+    .toggle { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:.9rem; }
+    .preset-row { display:grid; grid-template-columns:minmax(160px,1fr) auto auto; gap:8px; }
+    .preset-edit { display:grid; grid-template-columns:minmax(160px,1fr) auto; gap:8px; margin-top:8px; }
+    .caps { display:flex; flex-wrap:wrap; gap:7px; margin-top:16px; }
     .cap { border:1px solid var(--border); border-radius:8px; padding:5px 8px; font-size:.8rem; color:#c5d2e5; }
     .cap.off { opacity:.42; text-decoration:line-through; }
     .message { min-height:1.4em; margin-top:14px; font-size:.88rem; color:var(--muted); }
@@ -38,7 +48,7 @@ HTML = r'''<!doctype html>
     .message.bad,.error { color:#ffc1c1; }
     .error { margin-top:12px; padding:10px; border:1px solid #66303a; border-radius:9px; background:#381d23; word-break:break-word; }
     .empty { color:var(--muted); padding:18px 0; }
-    @media(max-width:620px){header{flex-direction:column}.selector-wrap{width:100%}.selector-wrap label{text-align:left}select{width:100%;max-width:none}}
+    @media(max-width:620px){header{flex-direction:column}.selector-wrap{width:100%}.selector-wrap label{text-align:left}.selector-wrap select{width:100%;max-width:none}.preset-row,.preset-edit{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -56,8 +66,10 @@ HTML = r'''<!doctype html>
 const selector = document.getElementById('camera-selector');
 const active = document.getElementById('active-camera');
 const messages = new Map();
+const presetCache = new Map();
 let cameras = [];
 let selectedId = localStorage.getItem('multicam-active-camera') || '';
+let feedTimer = null;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -65,6 +77,7 @@ function esc(value) {
 function capability(name, enabled) {
   return `<span class="cap${enabled ? '' : ' off'}">${esc(name)}</span>`;
 }
+function currentCamera() { return cameras.find(item => item.id === selectedId); }
 function renderSelector() {
   if (!cameras.length) {
     selector.innerHTML = '<option>No configured cameras</option>';
@@ -78,8 +91,13 @@ function renderSelector() {
   selector.value = selectedId;
   selector.disabled = false;
 }
+function presetOptions(camera) {
+  const presets = presetCache.get(camera.id) || [];
+  if (!presets.length) return '<option value="">Load presets first</option>';
+  return presets.map(p => `<option value="${esc(p.token)}">${esc(p.name || `Preset ${p.token}`)}</option>`).join('');
+}
 function renderActive() {
-  const camera = cameras.find(item => item.id === selectedId);
+  const camera = currentCamera();
   if (!camera) return;
   const state = camera.connection_state || (camera.available === false ? 'unavailable' : 'available');
   const caps = camera.capabilities || {};
@@ -91,17 +109,61 @@ function renderActive() {
       <div><h2 class="camera-name">${esc(camera.name)}</h2><div class="meta">${esc(camera.driver)} · ${esc(camera.host)}<br>${esc(camera.listen || '')}</div></div>
       <span class="status ${state === 'unavailable' ? 'bad' : state === 'untested' ? 'untested' : ''}">${esc(state)}</span>
     </div>
-    <div class="controls">
-      <button type="button" class="ptz up" data-command="move" data-tilt="1" ${disabled?'disabled':''}>↑</button>
-      <button type="button" class="ptz left" data-command="move" data-pan="-1" ${disabled?'disabled':''}>←</button>
-      <button type="button" class="ptz stop" data-command="stop" ${disabled?'disabled':''}>■</button>
-      <button type="button" class="ptz right" data-command="move" data-pan="1" ${disabled?'disabled':''}>→</button>
-      <button type="button" class="ptz down" data-command="move" data-tilt="-1" ${disabled?'disabled':''}>↓</button>
+
+    <div class="section">
+      <div class="section-head"><h3>Live feed</h3><label class="toggle"><input id="feed-toggle" type="checkbox" ${camera.feed_enabled?'checked':''} ${camera.feed_supported?'':'disabled'}> Enabled</label></div>
+      <div class="hint">Snapshot feed is opt-in and disabled by default.</div>
+      <div id="feed-box" class="feed-box ${camera.feed_enabled?'enabled':''}">${camera.feed_enabled ? `<img id="feed-image" alt="${esc(camera.name)} live snapshot">` : ''}</div>
     </div>
-    <div class="caps">${capability('Pan / tilt',!!caps.pan_tilt)}${capability('Zoom',!!caps.zoom)}${capability('Presets',!!caps.presets)}${capability('Audio',!!caps.audio)}</div>
+
+    <div class="section">
+      <h3>Pan / tilt</h3>
+      <div class="controls">
+        <button type="button" class="ptz up" data-command="move" data-tilt="1" ${disabled?'disabled':''}>↑</button>
+        <button type="button" class="ptz left" data-command="move" data-pan="-1" ${disabled?'disabled':''}>←</button>
+        <button type="button" class="ptz stop" data-command="stop" ${disabled?'disabled':''}>■</button>
+        <button type="button" class="ptz right" data-command="move" data-pan="1" ${disabled?'disabled':''}>→</button>
+        <button type="button" class="ptz down" data-command="move" data-tilt="-1" ${disabled?'disabled':''}>↓</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Zoom</h3>
+      <div class="zoom">
+        <button type="button" data-command="zoom" data-direction="out" ${caps.zoom?'':'disabled'}>Zoom out</button>
+        <button type="button" data-command="zoom" data-direction="in" ${caps.zoom?'':'disabled'}>Zoom in</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h3>Presets</h3><button type="button" data-command="load-presets" ${caps.presets?'':'disabled'}>Load presets</button></div>
+      <div class="preset-row">
+        <select id="preset-selector">${presetOptions(camera)}</select>
+        <button type="button" data-command="goto-preset" ${caps.presets?'':'disabled'}>Go to</button>
+        <button type="button" data-command="refresh-presets" ${caps.presets?'':'disabled'}>Refresh</button>
+      </div>
+      <div class="preset-edit">
+        <input id="preset-name" maxlength="40" placeholder="Preset name">
+        <button type="button" data-command="save-preset" ${caps.presets?'':'disabled'}>Save current position</button>
+      </div>
+    </div>
+
+    <div class="caps">${capability('Pan / tilt',!!caps.pan_tilt)}${capability('Zoom',!!caps.zoom)}${capability('Presets',!!caps.presets)}${capability('Live feed',!!camera.feed_supported)}</div>
     <div class="message ${message?.ok ? 'ok' : message ? 'bad' : ''}">${message ? esc(message.text) : ''}</div>
     ${camera.error ? `<div class="error">${esc(camera.error)}</div>` : ''}
   </section>`;
+  syncFeedTimer(camera);
+}
+function syncFeedTimer(camera) {
+  if (feedTimer) clearInterval(feedTimer);
+  feedTimer = null;
+  if (!camera.feed_enabled) return;
+  const refreshImage = () => {
+    const image = document.getElementById('feed-image');
+    if (image) image.src = `/api/cameras/${encodeURIComponent(camera.id)}/snapshot.jpg?_=${Date.now()}`;
+  };
+  refreshImage();
+  feedTimer = setInterval(refreshImage, 1500);
 }
 async function loadCameras() {
   const response = await fetch('/api/cameras', {cache:'no-store'});
@@ -112,21 +174,43 @@ async function loadCameras() {
   renderSelector();
   renderActive();
 }
-async function sendCommand(button) {
+async function post(command, payload={}) {
   const id = selectedId;
-  const command = button.dataset.command;
-  const payload = {};
-  if (button.dataset.pan) payload.pan = Number(button.dataset.pan);
-  if (button.dataset.tilt) payload.tilt = Number(button.dataset.tilt);
-  button.disabled = true;
-  messages.set(id, {ok:true, text:`Sending ${command}…`});
+  const response = await fetch(`/api/cameras/${encodeURIComponent(id)}/${command}`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), cache:'no-store'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+async function loadPresets() {
+  const response = await fetch(`/api/cameras/${encodeURIComponent(selectedId)}/presets`, {cache:'no-store'});
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  presetCache.set(selectedId, data.presets || []);
   renderActive();
+}
+async function runAction(button) {
+  const id = selectedId;
   try {
-    const response = await fetch(`/api/cameras/${encodeURIComponent(id)}/${command}`, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), cache:'no-store'
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    messages.set(id, {ok:true, text:'Working…'});
+    renderActive();
+    const command = button.dataset.command;
+    if (command === 'move') await post('move', {pan:Number(button.dataset.pan||0), tilt:Number(button.dataset.tilt||0)});
+    else if (command === 'stop') await post('stop');
+    else if (command === 'zoom') await post('zoom', {direction:button.dataset.direction});
+    else if (command === 'load-presets' || command === 'refresh-presets') await loadPresets();
+    else if (command === 'goto-preset') {
+      const token = document.getElementById('preset-selector')?.value;
+      if (!token) throw new Error('Select a preset');
+      await fetch(`/api/cameras/${encodeURIComponent(id)}/presets/${encodeURIComponent(token)}/goto`, {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`)});
+    } else if (command === 'save-preset') {
+      const token = document.getElementById('preset-selector')?.value;
+      const name = document.getElementById('preset-name')?.value || '';
+      if (!token) throw new Error('Select the preset slot to overwrite');
+      await fetch(`/api/cameras/${encodeURIComponent(id)}/presets/${encodeURIComponent(token)}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`)});
+      await loadPresets();
+    }
     messages.set(id, {ok:true, text:`${command} accepted at ${new Date().toLocaleTimeString()}`});
   } catch (error) {
     messages.set(id, {ok:false, text:error.message});
@@ -136,7 +220,17 @@ async function sendCommand(button) {
 active.addEventListener('click', event => {
   const button = event.target.closest('button[data-command]');
   if (!button || button.disabled) return;
-  sendCommand(button);
+  runAction(button);
+});
+active.addEventListener('change', async event => {
+  if (event.target.id !== 'feed-toggle') return;
+  try {
+    await post('feed', {enabled:event.target.checked});
+    messages.set(selectedId, {ok:true, text:`Live feed ${event.target.checked?'enabled':'disabled'}`});
+  } catch (error) {
+    messages.set(selectedId, {ok:false, text:error.message});
+  }
+  await loadCameras();
 });
 selector.addEventListener('change', () => {
   selectedId = selector.value;

@@ -84,7 +84,7 @@ function card(camera) {
 }
 
 async function loadCameras() {
-  const response = await fetch(`/api/cameras?_=${Date.now()}`, {cache:'no-store'});
+  const response = await fetch('/api/cameras', {cache:'no-store'});
   if (!response.ok) throw new Error(`Status request failed: HTTP ${response.status}`);
   const cameras = await response.json();
   grid.innerHTML = cameras.length ? cameras.map(card).join('') : 'No cameras configured.';

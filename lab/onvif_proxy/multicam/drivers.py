@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import threading
-import time
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import requests
-from requests.auth import HTTPDigestAuth
 
 from .config import CameraConfig
 
 SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
 TPTZ = "http://www.onvif.org/ver20/ptz/wsdl"
 TT = "http://www.onvif.org/ver10/schema"
+FOV_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov"
 
 
 @dataclass(frozen=True)
@@ -60,11 +59,12 @@ def _soap(operation: str, *, pan: float = 0, tilt: float = 0) -> bytes:
     body = ET.SubElement(envelope, f"{{{SOAP12}}}Body")
     op = ET.SubElement(body, f"{{{TPTZ}}}{operation}")
     ET.SubElement(op, f"{{{TPTZ}}}ProfileToken").text = "000"
-    if operation == "ContinuousMove":
-        velocity = ET.SubElement(op, f"{{{TPTZ}}}Velocity")
-        node = ET.SubElement(velocity, f"{{{TT}}}PanTilt")
+    if operation == "RelativeMove":
+        translation = ET.SubElement(op, f"{{{TPTZ}}}Translation")
+        node = ET.SubElement(translation, f"{{{TT}}}PanTilt")
         node.set("x", str(pan))
         node.set("y", str(tilt))
+        node.set("space", FOV_SPACE)
     elif operation == "Stop":
         ET.SubElement(op, f"{{{TPTZ}}}PanTilt").text = "true"
         ET.SubElement(op, f"{{{TPTZ}}}Zoom").text = "false"
@@ -72,12 +72,25 @@ def _soap(operation: str, *, pan: float = 0, tilt: float = 0) -> bytes:
 
 
 class IcseeOnvifDriver(CameraDriver):
+    """Manual-control adapter for the existing per-camera proxy listener.
+
+    The dashboard must use the same RelativeMove translation path that was
+    already validated with Frigate. It must not maintain a second direct PTZ
+    implementation for this camera family.
+    """
+
     def __init__(self, config: CameraConfig):
         super().__init__(config)
         self._lock = threading.RLock()
-        self._port = int(config.options.get("onvif_port", 8899))
+        self._host = "127.0.0.1"
+        self._port = config.listen_port
         self._path = str(config.options.get("ptz_path", "/onvif/ptz_service"))
         self._timeout = float(config.options.get("timeout", 10))
+        self._ui_step = float(config.options.get("ui_relative_step", 0.1))
+        if not 0 < self._ui_step <= 1:
+            raise ValueError(
+                f"{config.camera_id}: ui_relative_step must be greater than 0 and at most 1"
+            )
 
     @property
     def capabilities(self) -> CameraCapabilities:
@@ -85,22 +98,26 @@ class IcseeOnvifDriver(CameraDriver):
 
     def _post(self, operation: str, payload: bytes) -> None:
         response = requests.post(
-            f"http://{self.config.host}:{self._port}{self._path}",
+            f"http://{self._host}:{self._port}{self._path}",
             data=payload,
-            headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{TPTZ}/{operation}"'},
-            auth=HTTPDigestAuth(self.config.username or "", self.config.password or ""),
+            headers={
+                "Content-Type": (
+                    "application/soap+xml; charset=utf-8; "
+                    f'action="{TPTZ}/{operation}"'
+                )
+            },
             timeout=self._timeout,
         )
         response.raise_for_status()
 
     def move(self, pan: float, tilt: float, duration: float) -> None:
+        del duration
+        pan = max(-1.0, min(1.0, pan)) * self._ui_step
+        tilt = max(-1.0, min(1.0, tilt)) * self._ui_step
+        if abs(pan) < 1e-9 and abs(tilt) < 1e-9:
+            return
         with self._lock:
-            self._post("ContinuousMove", _soap("ContinuousMove", pan=pan, tilt=tilt))
-        threading.Thread(target=self._stop_after, args=(max(0.04, duration),), daemon=True).start()
-
-    def _stop_after(self, duration: float) -> None:
-        time.sleep(duration)
-        self.stop()
+            self._post("RelativeMove", _soap("RelativeMove", pan=pan, tilt=tilt))
 
     def stop(self) -> None:
         with self._lock:

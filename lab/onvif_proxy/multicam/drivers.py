@@ -22,6 +22,7 @@ class CameraCapabilities:
     pan_tilt: bool
     zoom: bool = False
     presets: bool = False
+    home: bool = False
     audio: bool = False
 
 
@@ -73,13 +74,6 @@ def _soap(operation: str, *, pan: float = 0, tilt: float = 0) -> bytes:
 
 
 class IcseeOnvifDriver(CameraDriver):
-    """Manual-control adapter for the existing per-camera proxy listener.
-
-    The dashboard must use the same RelativeMove translation path that was
-    already validated with Frigate. It must not maintain a second direct PTZ
-    implementation for this camera family.
-    """
-
     def __init__(self, config: CameraConfig):
         super().__init__(config)
         self._lock = threading.RLock()
@@ -89,9 +83,7 @@ class IcseeOnvifDriver(CameraDriver):
         self._timeout = float(config.options.get("timeout", 10))
         self._ui_step = float(config.options.get("ui_relative_step", 0.1))
         if not 0 < self._ui_step <= 1:
-            raise ValueError(
-                f"{config.camera_id}: ui_relative_step must be greater than 0 and at most 1"
-            )
+            raise ValueError(f"{config.camera_id}: ui_relative_step must be greater than 0 and at most 1")
 
     @property
     def capabilities(self) -> CameraCapabilities:
@@ -101,12 +93,7 @@ class IcseeOnvifDriver(CameraDriver):
         response = requests.post(
             f"http://{self._host}:{self._port}{self._path}",
             data=payload,
-            headers={
-                "Content-Type": (
-                    "application/soap+xml; charset=utf-8; "
-                    f'action="{TPTZ}/{operation}"'
-                )
-            },
+            headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{TPTZ}/{operation}"'},
             timeout=self._timeout,
         )
         response.raise_for_status()
@@ -126,18 +113,12 @@ class IcseeOnvifDriver(CameraDriver):
 
 
 class TapoC200Driver(CameraDriver):
-    """Tapo C200 motor driver using the camera's native ONVIF service.
-
-    Construction remains side-effect free. The camera is contacted lazily on
-    the first status query or PTZ command. Dashboard movement is implemented as
-    a short ContinuousMove pulse followed by Stop.
-    """
+    """Tapo C200 native ONVIF driver used by the listener and dashboard."""
 
     def __init__(self, config: CameraConfig):
         super().__init__(config)
         if not config.username or not config.password:
             raise ValueError(f"{config.camera_id}: Tapo username and password are required")
-
         self._lock = threading.RLock()
         self._client = TapoOnvifClient(config)
         self._connection_error: str | None = None
@@ -145,25 +126,31 @@ class TapoC200Driver(CameraDriver):
         self._velocity = float(config.options.get("continuous_velocity", 0.5))
         self._pulse_seconds = float(config.options.get("pulse_seconds", 0.10))
         if not 0 < self._velocity <= 1:
-            raise ValueError(
-                f"{config.camera_id}: continuous_velocity must be greater than 0 and at most 1"
-            )
+            raise ValueError(f"{config.camera_id}: continuous_velocity must be greater than 0 and at most 1")
         if not 0.02 <= self._pulse_seconds <= 2:
-            raise ValueError(
-                f"{config.camera_id}: pulse_seconds must be between 0.02 and 2"
-            )
+            raise ValueError(f"{config.camera_id}: pulse_seconds must be between 0.02 and 2")
 
     @property
     def capabilities(self) -> CameraCapabilities:
-        return CameraCapabilities(pan_tilt=True, zoom=False, presets=True, audio=False)
+        return CameraCapabilities(pan_tilt=True, zoom=False, presets=True, home=True, audio=False)
 
-    def _record_success(self) -> None:
+    def _success(self):
         self._connection_attempted = True
         self._connection_error = None
 
-    def _record_failure(self, exc: Exception) -> None:
+    def _failure(self, exc: Exception):
         self._connection_attempted = True
         self._connection_error = f"{type(exc).__name__}: {exc}"
+
+    def _call(self, operation: str, function, *args):
+        with self._lock:
+            try:
+                result = function(*args)
+                self._success()
+                return result
+            except Exception as exc:
+                self._failure(exc)
+                raise RuntimeError(f"{self.config.camera_id}: native ONVIF {operation} failed: {self._connection_error}") from exc
 
     def move(self, pan: float, tilt: float, duration: float) -> None:
         pan = max(-1.0, min(1.0, pan))
@@ -174,37 +161,35 @@ class TapoC200Driver(CameraDriver):
             tilt = -tilt
         if abs(pan) < 1e-9 and abs(tilt) < 1e-9:
             return
-
-        velocity_pan = pan * self._velocity
-        velocity_tilt = tilt * self._velocity
         pulse = duration if duration > 0 else self._pulse_seconds
-
-        with self._lock:
-            try:
-                self._client.continuous_move(
-                    velocity_pan,
-                    velocity_tilt,
-                    max(0.02, min(2.0, pulse)),
-                )
-                self._record_success()
-            except Exception as exc:
-                self._record_failure(exc)
-                raise RuntimeError(
-                    f"{self.config.camera_id}: native ONVIF PTZ movement failed: "
-                    f"{self._connection_error}"
-                ) from exc
+        self._call("movement", self._client.continuous_move, pan * self._velocity, tilt * self._velocity, max(0.02, min(2.0, pulse)))
 
     def stop(self) -> None:
-        with self._lock:
-            try:
-                self._client.stop()
-                self._record_success()
-            except Exception as exc:
-                self._record_failure(exc)
-                raise RuntimeError(
-                    f"{self.config.camera_id}: native ONVIF stop failed: "
-                    f"{self._connection_error}"
-                ) from exc
+        self._call("stop", self._client.stop)
+
+    def ptz_status(self):
+        return self._call("status", self._client.get_status)
+
+    def presets(self):
+        return self._call("GetPresets", self._client.get_presets)
+
+    def set_preset(self, token: str, name: str):
+        return self._call("SetPreset", self._client.set_preset, token, name)
+
+    def goto_preset(self, token: str):
+        return self._call("GotoPreset", self._client.goto_preset, token)
+
+    def remove_preset(self, token: str):
+        return self._call("RemovePreset", self._client.remove_preset, token)
+
+    def goto_home(self):
+        return self._call("GotoHomePosition", self._client.goto_home)
+
+    def set_home(self):
+        return self._call("SetHomePosition", self._client.set_home)
+
+    def diagnostics(self):
+        return self._call("diagnostics", self._client.diagnostics)
 
     def status(self) -> dict[str, Any]:
         status = super().status()
@@ -218,17 +203,13 @@ class TapoC200Driver(CameraDriver):
         else:
             status["available"] = True
             status["connection_state"] = "available"
-
         if bool(self.config.options.get("query_device_info", False)):
             try:
-                with self._lock:
-                    status["ptz_status"] = self._client.get_status()
-                self._record_success()
+                status["ptz_status"] = self.ptz_status()
                 status["available"] = True
                 status["connection_state"] = "available"
                 status.pop("error", None)
-            except Exception as exc:
-                self._record_failure(exc)
+            except Exception:
                 status["available"] = False
                 status["connection_state"] = "unavailable"
                 status["error"] = self._connection_error

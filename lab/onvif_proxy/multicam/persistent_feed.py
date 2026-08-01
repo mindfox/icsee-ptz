@@ -10,6 +10,10 @@ from .config import CameraConfig
 class PersistentRtspFeed:
     """Maintain one configured RTSP connection and cache the newest JPEG frame."""
 
+    MAX_CONSECUTIVE_FAILURES = 5
+    MAX_RETRY_SECONDS = 60.0
+    STABLE_RUN_SECONDS = 30.0
+
     def __init__(self, camera: CameraConfig, log):
         self.camera = camera
         self.log = log
@@ -38,6 +42,11 @@ class PersistentRtspFeed:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
+        self._restart_count = 0
+        self._consecutive_failures = 0
+        self._last_exit_code: int | None = None
+        self._last_error: str | None = None
+        self._last_frame_at: float | None = None
 
     def _command(self) -> list[str]:
         return [
@@ -67,6 +76,12 @@ class PersistentRtspFeed:
                 return
             self._enabled = True
             self._latest = None
+            self._generation = 0
+            self._restart_count = 0
+            self._consecutive_failures = 0
+            self._last_exit_code = None
+            self._last_error = None
+            self._last_frame_at = None
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
@@ -120,6 +135,11 @@ class PersistentRtspFeed:
     def status(self) -> dict:
         with self._condition:
             process = self._process
+            frame_age = (
+                max(0.0, time.monotonic() - self._last_frame_at)
+                if self._last_frame_at is not None
+                else None
+            )
             return {
                 "source": self.source,
                 "running": bool(
@@ -127,26 +147,72 @@ class PersistentRtspFeed:
                 ),
                 "frame_ready": self._latest is not None,
                 "generation": self._generation,
+                "restart_count": self._restart_count,
+                "consecutive_failures": self._consecutive_failures,
+                "last_exit_code": self._last_exit_code,
+                "last_error": self._last_error,
+                "frame_age_seconds": round(frame_age, 3) if frame_age is not None else None,
             }
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            started = time.monotonic()
+            frames_before = self._generation
+            error: Exception | None = None
+
             try:
                 self._capture_once()
             except FileNotFoundError:
-                self.log("ERROR", f"ffmpeg binary not found: {self.ffmpeg}")
+                self._last_error = f"ffmpeg binary not found: {self.ffmpeg}"
+                self.log("ERROR", self._last_error)
                 break
             except Exception as exc:
+                error = exc
+                self._last_error = f"{type(exc).__name__}: {exc}"
                 if not self._stop_event.is_set():
-                    self.log(
-                        "ERROR",
-                        f"Persistent RTSP feed failed: {type(exc).__name__}: {exc}",
+                    self.log("ERROR", f"Persistent RTSP feed failed: {self._last_error}")
+
+            if self._stop_event.is_set():
+                break
+
+            runtime = time.monotonic() - started
+            produced_frames = self._generation > frames_before
+            stable = produced_frames and runtime >= self.STABLE_RUN_SECONDS
+            if stable:
+                self._consecutive_failures = 0
+                self._last_error = None
+            else:
+                self._consecutive_failures += 1
+                if error is None and self._last_error is None:
+                    self._last_error = (
+                        f"ffmpeg exited after {runtime:.1f}s without a stable run"
                     )
-            if not self._stop_event.wait(self.retry_seconds):
+
+            if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                with self._condition:
+                    self._enabled = False
+                    self._latest = None
+                    self._condition.notify_all()
+                self.log(
+                    "ERROR",
+                    "Persistent RTSP feed disabled after "
+                    f"{self._consecutive_failures} consecutive failures",
+                )
+                break
+
+            delay = min(
+                self.MAX_RETRY_SECONDS,
+                self.retry_seconds * (2 ** max(0, self._consecutive_failures - 1)),
+            )
+            self._restart_count += 1
+            if not self._stop_event.wait(delay):
                 self.log(
                     "WARN",
-                    f"Restarting persistent RTSP feed after {self.retry_seconds:g}s",
+                    "Restarting persistent RTSP feed "
+                    f"after {delay:g}s restart={self._restart_count} "
+                    f"failures={self._consecutive_failures}",
                 )
+
         with self._condition:
             self._process = None
             self._condition.notify_all()
@@ -197,6 +263,7 @@ class PersistentRtspFeed:
                 with self._condition:
                     self._latest = frame
                     self._generation += 1
+                    self._last_frame_at = time.monotonic()
                     self._condition.notify_all()
 
         if process.poll() is None:
@@ -209,8 +276,11 @@ class PersistentRtspFeed:
         code = process.returncode
         stderr_thread.join(1)
         with self._condition:
+            self._last_exit_code = code
+            self._latest = None
             if self._process is process:
                 self._process = None
+            self._condition.notify_all()
         if not self._stop_event.is_set() and code not in (0, 255):
             raise RuntimeError(f"ffmpeg exited with status {code}")
 

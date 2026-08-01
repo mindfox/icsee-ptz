@@ -6,12 +6,13 @@ import subprocess
 import threading
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import requests
 from requests.auth import HTTPDigestAuth
 
 from .config import ProxyConfig
+from .control import DvripSnapshotClient, ProxyOnvifClient
 from .onvif_synth import advertise_ptz, synthetic_ptz_response
 from .registry import DriverRegistry
 
@@ -154,12 +155,26 @@ class CameraRuntime:
         self.errors = {}
         self.servers = []
         self.processes = []
+        self.controls = {}
+        self.snapshots = {}
+        self.feed_enabled = {}
 
         for camera in config.cameras:
             try:
                 self.drivers[camera.camera_id] = self.registry.create(camera)
+                self.feed_enabled[camera.camera_id] = False
+                if camera.driver == "icsee_onvif":
+                    self.controls[camera.camera_id] = ProxyOnvifClient(camera)
+                    if bool(camera.options.get("live_feed", True)):
+                        self.snapshots[camera.camera_id] = DvripSnapshotClient(camera)
             except Exception as exc:
                 self.errors[camera.camera_id] = f"{type(exc).__name__}: {exc}"
+
+    def _camera(self, camera_id):
+        for camera in self.config.cameras:
+            if camera.camera_id == camera_id:
+                return camera
+        raise KeyError(camera_id)
 
     def start(self):
         for camera in self.config.cameras:
@@ -223,6 +238,8 @@ class CameraRuntime:
                 if camera.driver == "icsee_onvif" and not process_status.get(camera.camera_id, False):
                     item["available"] = False
                     item["error"] = "legacy proxy process is not running"
+                item["feed_supported"] = camera.camera_id in self.snapshots
+                item["feed_enabled"] = self.feed_enabled.get(camera.camera_id, False)
                 result.append(item)
             except Exception as exc:
                 result.append(
@@ -242,11 +259,53 @@ class CameraRuntime:
             raise RuntimeError(self.errors[camera_id])
         return self.drivers[camera_id]
 
+    def _control(self, camera_id):
+        try:
+            return self.controls[camera_id]
+        except KeyError as exc:
+            raise RuntimeError(f"{camera_id}: control is not supported") from exc
+
     def move(self, camera_id, pan, tilt, duration=0.1):
         self._driver(camera_id).move(pan, tilt, duration)
 
     def stop_camera(self, camera_id):
         self._driver(camera_id).stop()
+
+    def zoom(self, camera_id, direction, duration=0.08):
+        velocity = 0.5 if direction == "in" else -0.5 if direction == "out" else None
+        if velocity is None:
+            raise ValueError("zoom direction must be in or out")
+        return self._control(camera_id).continuous_move(zoom=velocity, seconds=duration)
+
+    def presets(self, camera_id):
+        return self._control(camera_id).get_presets()
+
+    def set_preset(self, camera_id, preset_token, name):
+        if len(name) > 40:
+            raise ValueError("preset name must be at most 40 characters")
+        return self._control(camera_id).set_preset(preset_token, name)
+
+    def goto_preset(self, camera_id, preset_token, speed_x=1, speed_y=1):
+        if not 1 <= speed_x <= 8 or not 1 <= speed_y <= 8:
+            raise ValueError("preset speeds must be from 1 to 8")
+        return self._control(camera_id).goto_preset(preset_token, speed_x, speed_y)
+
+    def set_feed(self, camera_id, enabled):
+        self._camera(camera_id)
+        if enabled and camera_id not in self.snapshots:
+            raise RuntimeError(f"{camera_id}: live feed is not supported")
+        self.feed_enabled[camera_id] = bool(enabled)
+        return self.feed_enabled[camera_id]
+
+    def snapshot(self, camera_id):
+        self._camera(camera_id)
+        if not self.feed_enabled.get(camera_id, False):
+            raise RuntimeError("live feed is disabled")
+        try:
+            client = self.snapshots[camera_id]
+        except KeyError as exc:
+            raise RuntimeError(f"{camera_id}: live feed is not supported") from exc
+        return client.snapshot()
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -255,40 +314,73 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)
 
     def do_GET(self):
-        if self.path == "/api/cameras":
-            self.send_payload(200, self.server.runtime.status())
-        elif self.path == "/health":
-            self.send_payload(200, {"status": "ok"})
-        elif self.path == "/":
-            self.send_payload(200, HTML.encode(), "text/html; charset=utf-8")
-        else:
-            self.send_payload(404, {"error": "not found"})
+        path = urlsplit(self.path).path
+        parts = path.strip("/").split("/")
+        try:
+            if path == "/api/cameras":
+                return self.send_payload(200, self.server.runtime.status())
+            if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "presets":
+                return self.send_payload(200, {"presets": self.server.runtime.presets(unquote(parts[2]))})
+            if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "snapshot.jpg":
+                jpeg = self.server.runtime.snapshot(unquote(parts[2]))
+                return self.send_payload(200, jpeg, "image/jpeg")
+            if path == "/health":
+                return self.send_payload(200, {"status": "ok"})
+            if path == "/":
+                return self.send_payload(200, HTML.encode(), "text/html; charset=utf-8")
+            return self.send_payload(404, {"error": "not found"})
+        except KeyError:
+            self.send_payload(404, {"error": "unknown camera"})
+        except Exception as exc:
+            self.send_payload(503, {"error": f"{type(exc).__name__}: {exc}"})
 
     def do_POST(self):
-        parts = self.path.strip("/").split("/")
-        if len(parts) != 4 or parts[:2] != ["api", "cameras"]:
+        path = urlsplit(self.path).path
+        parts = path.strip("/").split("/")
+        if len(parts) < 4 or parts[:2] != ["api", "cameras"]:
             return self.send_payload(404, {"error": "not found"})
-        camera_id, command = parts[2], parts[3]
+        camera_id, command = unquote(parts[2]), parts[3]
         try:
-            if command == "move":
-                payload = json.loads(
-                    self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}"
-                )
+            payload = json.loads(
+                self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}"
+            )
+            result = None
+            if command == "move" and len(parts) == 4:
                 self.server.runtime.move(
                     camera_id,
                     float(payload.get("pan", 0)),
                     float(payload.get("tilt", 0)),
                     float(payload.get("duration", 0.1)),
                 )
-            elif command == "stop":
+            elif command == "stop" and len(parts) == 4:
                 self.server.runtime.stop_camera(camera_id)
+            elif command == "zoom" and len(parts) == 4:
+                result = self.server.runtime.zoom(
+                    camera_id,
+                    str(payload.get("direction", "")),
+                    float(payload.get("duration", 0.08)),
+                )
+            elif command == "feed" and len(parts) == 4:
+                result = {"enabled": self.server.runtime.set_feed(camera_id, bool(payload.get("enabled", False)))}
+            elif command == "presets" and len(parts) == 5:
+                preset_token = unquote(parts[4])
+                result = self.server.runtime.set_preset(camera_id, preset_token, str(payload.get("name", "")).strip())
+            elif command == "presets" and len(parts) == 6 and parts[5] == "goto":
+                preset_token = unquote(parts[4])
+                result = self.server.runtime.goto_preset(
+                    camera_id,
+                    preset_token,
+                    int(payload.get("speed_x", 1)),
+                    int(payload.get("speed_y", 1)),
+                )
             else:
                 return self.send_payload(404, {"error": "unknown command"})
-            self.send_payload(200, {"status": "ok"})
+            self.send_payload(200, {"status": "ok", "result": result})
         except KeyError:
             self.send_payload(404, {"error": "unknown camera"})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -300,7 +392,7 @@ class WebHandler(BaseHTTPRequestHandler):
         return
 
 
-HTML = '''<!doctype html><meta charset="utf-8"><title>Camera proxy</title><style>body{font:16px sans-serif;max-width:900px;margin:2rem auto}section{border:1px solid #aaa;padding:1rem;margin:1rem 0}button{font-size:1.2rem;margin:.2rem;padding:.5rem 1rem}</style><h1>Multi-camera ONVIF proxy</h1><main></main><script>async function post(id,cmd,p={}){let r=await fetch(`/api/cameras/${id}/${cmd}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)});if(!r.ok)alert(await r.text());await load()}async function load(){let cs=await(await fetch('/api/cameras')).json();document.querySelector('main').innerHTML=cs.map(c=>`<section><h2>${c.name}</h2><div>${c.driver} — ${c.host}</div><div>Status: ${c.available===false?'unavailable':'available'}</div><button onclick="post('${c.id}','move',{tilt:1})">↑</button><br><button onclick="post('${c.id}','move',{pan:-1})">←</button><button onclick="post('${c.id}','stop')">■</button><button onclick="post('${c.id}','move',{pan:1})">→</button><br><button onclick="post('${c.id}','move',{tilt:-1})">↓</button><pre>${JSON.stringify(c.error||c.capabilities,null,2)}</pre></section>`).join('')}load()</script>'''
+HTML = "<!doctype html><meta charset='utf-8'><title>Camera proxy</title>"
 
 
 def start_web(runtime):

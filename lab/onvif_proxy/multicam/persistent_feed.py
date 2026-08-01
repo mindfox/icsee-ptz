@@ -3,36 +3,33 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
-from urllib.parse import quote
 
 from .config import CameraConfig
 
 
 class PersistentRtspFeed:
-    """Maintain one RTSP connection and cache the newest complete JPEG frame."""
+    """Maintain one configured RTSP connection and cache the newest JPEG frame."""
 
     def __init__(self, camera: CameraConfig, log):
         self.camera = camera
         self.log = log
-        self.ffmpeg = str(camera.options.get("ffmpeg_binary", "ffmpeg"))
-        self.start_timeout = float(camera.options.get("feed_start_timeout", 15))
-        self.stop_timeout = float(camera.options.get("feed_stop_timeout", 5))
-        self.retry_seconds = float(camera.options.get("feed_retry_seconds", 5))
-        self.fps = float(camera.options.get("feed_fps", 1))
-        self.width = int(camera.options.get("feed_width", 960))
-        if not 0.1 <= self.fps <= 10:
-            raise ValueError(f"{camera.camera_id}: feed_fps must be between 0.1 and 10")
-        if not 160 <= self.width <= 3840:
-            raise ValueError(f"{camera.camera_id}: feed_width must be between 160 and 3840")
+        feed = camera.feed
+        if feed.source not in {"restream", "direct_rtsp"}:
+            raise ValueError(
+                f"{camera.camera_id}: persistent RTSP feed requires source=restream or direct_rtsp"
+            )
+        if not feed.url:
+            raise ValueError(f"{camera.camera_id}: feed URL is required")
 
-        port = int(camera.options.get("rtsp_port", 554))
-        path = str(camera.options.get("main_stream", "/stream1"))
-        if not path.startswith("/"):
-            path = "/" + path
-        username = quote(camera.username or "", safe="")
-        password = quote(camera.password or "", safe="")
-        auth = f"{username}:{password}@" if username or password else ""
-        self.url = f"rtsp://{auth}{camera.host}:{port}{path}"
+        self.source = feed.source
+        self.url = feed.url
+        self.transport = feed.transport
+        self.ffmpeg = feed.ffmpeg_binary
+        self.start_timeout = feed.start_timeout
+        self.stop_timeout = feed.stop_timeout
+        self.retry_seconds = feed.retry_seconds
+        self.fps = feed.fps
+        self.width = feed.width
 
         self._condition = threading.Condition()
         self._latest: bytes | None = None
@@ -49,7 +46,7 @@ class PersistentRtspFeed:
             "-loglevel",
             "warning",
             "-rtsp_transport",
-            "tcp",
+            self.transport,
             "-i",
             self.url,
             "-an",
@@ -77,7 +74,7 @@ class PersistentRtspFeed:
                 daemon=True,
             )
             self._thread.start()
-        self.log("INFO", "Persistent RTSP feed starting")
+        self.log("INFO", f"Persistent RTSP feed starting source={self.source}")
 
     def stop(self) -> None:
         with self._condition:
@@ -124,6 +121,7 @@ class PersistentRtspFeed:
         with self._condition:
             process = self._process
             return {
+                "source": self.source,
                 "running": bool(
                     self._enabled and process is not None and process.poll() is None
                 ),
@@ -162,7 +160,10 @@ class PersistentRtspFeed:
         )
         with self._condition:
             self._process = process
-        self.log("INFO", f"Persistent RTSP ffmpeg started pid={process.pid}")
+        self.log(
+            "INFO",
+            f"Persistent RTSP ffmpeg started pid={process.pid} source={self.source}",
+        )
 
         stderr_thread = threading.Thread(
             target=self._drain_stderr,

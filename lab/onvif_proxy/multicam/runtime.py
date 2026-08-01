@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from .config import ProxyConfig
-from .control import DvripSnapshotClient, ProxyOnvifClient
+from .control import DvripSnapshotClient, ProxyOnvifClient, RtspSnapshotClient
 from .registry import DriverRegistry
 from .tapo_server import TapoServer
 
@@ -29,12 +29,17 @@ class CameraRuntime:
 
         for camera in config.cameras:
             try:
-                self.drivers[camera.camera_id] = self.registry.create(camera)
+                driver = self.registry.create(camera)
+                self.drivers[camera.camera_id] = driver
                 self.feed_enabled[camera.camera_id] = False
                 if camera.driver == "icsee_onvif":
                     self.controls[camera.camera_id] = ProxyOnvifClient(camera)
                     if bool(camera.options.get("live_feed", True)):
                         self.snapshots[camera.camera_id] = DvripSnapshotClient(camera)
+                elif camera.driver == "tapo_c200":
+                    self.controls[camera.camera_id] = driver
+                    if bool(camera.options.get("live_feed", True)):
+                        self.snapshots[camera.camera_id] = RtspSnapshotClient(camera)
                 self.add_log(camera.camera_id, "INFO", f"Configured driver={camera.driver} host={camera.host} listener={camera.listen_host}:{camera.listen_port}")
             except Exception as exc:
                 self.errors[camera.camera_id] = f"{type(exc).__name__}: {exc}"
@@ -152,6 +157,15 @@ class CameraRuntime:
         self.add_log(camera_id, "INFO", "Read-only ONVIF diagnostics completed")
         return result
 
+    def ptz_status(self, camera_id):
+        control = self._control(camera_id)
+        function = getattr(control, "ptz_status", None) or getattr(control, "get_status", None)
+        if function is None:
+            raise RuntimeError(f"{camera_id}: PTZ status is not supported")
+        result = function()
+        self.add_log(camera_id, "INFO", f"PTZ status: {result!r}")
+        return result
+
     def move(self, camera_id, pan, tilt, duration=0.1):
         self.add_log(camera_id, "INFO", f"PTZ move requested pan={pan:g} tilt={tilt:g} duration={duration:g}s")
         self._driver(camera_id).move(pan, tilt, duration)
@@ -173,10 +187,8 @@ class CameraRuntime:
 
     def presets(self, camera_id):
         self.add_log(camera_id, "INFO", "ONVIF GetPresets requested")
-        result = self._control(camera_id).get_presets()
+        result = self._control(camera_id).get_presets() if hasattr(self._control(camera_id), "get_presets") else self._control(camera_id).presets()
         self.add_log(camera_id, "INFO", f"ONVIF GetPresets returned count={len(result)}")
-        for preset in result:
-            self.add_log(camera_id, "INFO", f"Preset: {preset!r}")
         return result
 
     def set_preset(self, camera_id, preset_token, name):
@@ -188,12 +200,39 @@ class CameraRuntime:
         return result
 
     def goto_preset(self, camera_id, preset_token, speed_x=1, speed_y=1):
-        if not 1 <= speed_x <= 8 or not 1 <= speed_y <= 8:
-            raise ValueError("preset speeds must be from 1 to 8")
-        self.add_log(camera_id, "INFO", f"ONVIF GotoPreset token={preset_token!r} speed=({speed_x},{speed_y})")
-        result = self._control(camera_id).goto_preset(preset_token, speed_x, speed_y)
+        control = self._control(camera_id)
+        self.add_log(camera_id, "INFO", f"ONVIF GotoPreset token={preset_token!r}")
+        if self._camera(camera_id).driver == "tapo_c200":
+            result = control.goto_preset(preset_token)
+        else:
+            if not 1 <= speed_x <= 8 or not 1 <= speed_y <= 8:
+                raise ValueError("preset speeds must be from 1 to 8")
+            result = control.goto_preset(preset_token, speed_x, speed_y)
         self.add_log(camera_id, "INFO", f"ONVIF GotoPreset response: {result!r}")
         return result
+
+    def remove_preset(self, camera_id, preset_token):
+        control = self._control(camera_id)
+        if not hasattr(control, "remove_preset"):
+            raise RuntimeError(f"{camera_id}: removing presets is not supported")
+        self.add_log(camera_id, "INFO", f"ONVIF RemovePreset token={preset_token!r}")
+        result = control.remove_preset(preset_token)
+        self.add_log(camera_id, "INFO", f"ONVIF RemovePreset response: {result!r}")
+        return result
+
+    def goto_home(self, camera_id):
+        control = self._control(camera_id)
+        if not hasattr(control, "goto_home"):
+            raise RuntimeError(f"{camera_id}: home position is not supported")
+        self.add_log(camera_id, "INFO", "ONVIF GotoHomePosition requested")
+        return control.goto_home()
+
+    def set_home(self, camera_id):
+        control = self._control(camera_id)
+        if not hasattr(control, "set_home"):
+            raise RuntimeError(f"{camera_id}: setting home position is not supported")
+        self.add_log(camera_id, "INFO", "ONVIF SetHomePosition requested")
+        return control.set_home()
 
     def set_feed(self, camera_id, enabled):
         self._camera(camera_id)

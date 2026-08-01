@@ -5,7 +5,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 import requests
-from requests.auth import HTTPDigestAuth
 
 from .onvif_synth import advertise_ptz, synthetic_ptz_response
 
@@ -92,7 +91,6 @@ class TapoHandler(BaseHTTPRequestHandler):
                 upstream,
                 data=body,
                 headers=headers,
-                auth=HTTPDigestAuth(self.server.camera.username or "", self.server.camera.password or ""),
                 timeout=self.server.timeout,
             )
             public = f'http://{self.headers.get("Host", f"127.0.0.1:{self.server.server_port}")}'

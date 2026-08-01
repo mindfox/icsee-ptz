@@ -21,17 +21,23 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         parts = path.strip("/").split("/")
+        camera_id = (
+            unquote(parts[2])
+            if len(parts) >= 3 and parts[:2] == ["api", "cameras"]
+            else None
+        )
+        operation = parts[3] if len(parts) >= 4 else None
         try:
             if path == "/api/cameras":
                 return self.send_payload(200, self.server.runtime.status())
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "logs":
-                return self.send_payload(200, {"entries": self.server.runtime.get_logs(unquote(parts[2]))})
+                return self.send_payload(200, {"entries": self.server.runtime.get_logs(camera_id)})
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "presets":
-                return self.send_payload(200, {"presets": self.server.runtime.presets(unquote(parts[2]))})
+                return self.send_payload(200, {"presets": self.server.runtime.presets(camera_id)})
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "ptz-status":
-                return self.send_payload(200, {"status": self.server.runtime.ptz_status(unquote(parts[2]))})
+                return self.send_payload(200, {"status": self.server.runtime.ptz_status(camera_id)})
             if len(parts) == 4 and parts[:2] == ["api", "cameras"] and parts[3] == "snapshot.jpg":
-                return self.send_payload(200, self.server.runtime.snapshot(unquote(parts[2])), "image/jpeg")
+                return self.send_payload(200, self.server.runtime.snapshot(camera_id), "image/jpeg")
             if path == "/health":
                 return self.send_payload(200, {"status": "ok"})
             if path == "/":
@@ -44,6 +50,12 @@ class WebHandler(BaseHTTPRequestHandler):
         except KeyError:
             self.send_payload(404, {"error": "unknown camera"})
         except Exception as exc:
+            if camera_id is not None and operation != "logs":
+                self.server.runtime.add_log(
+                    camera_id,
+                    "ERROR",
+                    f"Web GET {operation or path} failed: {type(exc).__name__}: {exc}",
+                )
             self.send_payload(503, {"error": f"{type(exc).__name__}: {exc}"})
 
     def do_POST(self):

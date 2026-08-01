@@ -27,6 +27,7 @@ services:
       - ../relative_zoom.py:/app/relative_zoom.py:ro
       - ../config_loader.py:/app/config_loader.py:ro
       - ../local-config/cameras.yaml:/config/cameras.yaml:ro
+      - ../../../custom_components/icsee_ptz:/opt/icsee_ptz:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

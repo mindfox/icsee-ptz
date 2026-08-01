@@ -88,7 +88,7 @@ class TapoHandler(BaseHTTPRequestHandler):
         upstream = f"http://{self.server.camera.host}:{self.server.onvif_port}{urlsplit(self.path).path}"
         headers = {key: value for key, value in self.headers.items() if key.lower() not in {"host", "content-length", "connection"}}
         try:
-            response = requests.post(
+            response = self.server.upstream_session.post(
                 upstream,
                 data=body,
                 headers=headers,
@@ -120,3 +120,5 @@ class TapoServer(ThreadingHTTPServer):
         self.onvif_port = int(camera.options.get("onvif_port", 2020))
         self.timeout = float(camera.options.get("timeout", 10))
         self.pulse = float(camera.options.get("pulse_seconds", 0.1))
+        self.upstream_session = requests.Session()
+        self.upstream_session.trust_env = False

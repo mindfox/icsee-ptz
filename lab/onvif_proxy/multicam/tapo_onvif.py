@@ -160,7 +160,8 @@ class TapoOnvifClient:
             f'xmlns:tptz="{TPTZ}"',
         )
         pan_tilt = _first(root, "PanTilt")
-        move_status = _first(root, "PanTilt")
+        move_status_root = _first(root, "MoveStatus")
+        move_status = _first(move_status_root, "PanTilt") if move_status_root is not None else None
         return {
             "profile_token": token,
             "pan": pan_tilt.attrib.get("x") if pan_tilt is not None else None,

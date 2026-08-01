@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from .config import CameraConfig
+from .tapo_onvif import TapoOnvifClient
 
 SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
 TPTZ = "http://www.onvif.org/ver20/ptz/wsdl"
@@ -125,12 +126,11 @@ class IcseeOnvifDriver(CameraDriver):
 
 
 class TapoC200Driver(CameraDriver):
-    """Tapo motor driver with lazy private-API initialization.
+    """Tapo C200 motor driver using the camera's native ONVIF service.
 
-    Constructing the multi-camera runtime must never contact a camera. Some Tapo
-    firmware revisions reject pytapo's private authentication while RTSP/ONVIF
-    remain usable. The failure is therefore contained to commands for this
-    camera instead of terminating every listener and the shared web UI.
+    Construction remains side-effect free. The camera is contacted lazily on
+    the first status query or PTZ command. Dashboard movement is implemented as
+    a short ContinuousMove pulse followed by Stop.
     """
 
     def __init__(self, config: CameraConfig):
@@ -139,60 +139,72 @@ class TapoC200Driver(CameraDriver):
             raise ValueError(f"{config.camera_id}: Tapo username and password are required")
 
         self._lock = threading.RLock()
-        self._camera: Any | None = None
+        self._client = TapoOnvifClient(config)
         self._connection_error: str | None = None
         self._connection_attempted = False
-        self._step = int(config.options.get("step", 10))
-        if self._step < 1:
-            raise ValueError(f"{config.camera_id}: step must be positive")
+        self._velocity = float(config.options.get("continuous_velocity", 0.5))
+        self._pulse_seconds = float(config.options.get("pulse_seconds", 0.10))
+        if not 0 < self._velocity <= 1:
+            raise ValueError(
+                f"{config.camera_id}: continuous_velocity must be greater than 0 and at most 1"
+            )
+        if not 0.02 <= self._pulse_seconds <= 2:
+            raise ValueError(
+                f"{config.camera_id}: pulse_seconds must be between 0.02 and 2"
+            )
 
     @property
     def capabilities(self) -> CameraCapabilities:
-        return CameraCapabilities(pan_tilt=True, zoom=False, presets=False, audio=False)
+        return CameraCapabilities(pan_tilt=True, zoom=False, presets=True, audio=False)
 
-    def _connect(self) -> Any:
-        if self._camera is not None:
-            return self._camera
-
+    def _record_success(self) -> None:
         self._connection_attempted = True
-        try:
-            from pytapo import Tapo
-        except ImportError as exc:
-            self._connection_error = "pytapo is not installed"
-            raise RuntimeError(self._connection_error) from exc
-
-        try:
-            self._camera = Tapo(
-                self.config.host,
-                self.config.username,
-                self.config.password,
-            )
-        except Exception as exc:
-            self._connection_error = f"{type(exc).__name__}: {exc}"
-            raise RuntimeError(
-                f"{self.config.camera_id}: Tapo private API unavailable: "
-                f"{self._connection_error}"
-            ) from exc
-
         self._connection_error = None
-        return self._camera
+
+    def _record_failure(self, exc: Exception) -> None:
+        self._connection_attempted = True
+        self._connection_error = f"{type(exc).__name__}: {exc}"
 
     def move(self, pan: float, tilt: float, duration: float) -> None:
-        del duration
-        horizontal = round(max(-1.0, min(1.0, pan)) * self._step)
-        vertical = round(max(-1.0, min(1.0, tilt)) * self._step)
+        pan = max(-1.0, min(1.0, pan))
+        tilt = max(-1.0, min(1.0, tilt))
         if bool(self.config.options.get("invert_pan", False)):
-            horizontal = -horizontal
+            pan = -pan
         if bool(self.config.options.get("invert_tilt", False)):
-            vertical = -vertical
-        if horizontal == 0 and vertical == 0:
+            tilt = -tilt
+        if abs(pan) < 1e-9 and abs(tilt) < 1e-9:
             return
 
+        velocity_pan = pan * self._velocity
+        velocity_tilt = tilt * self._velocity
+        pulse = duration if duration > 0 else self._pulse_seconds
+
         with self._lock:
-            self._connect().moveMotor(horizontal, vertical)
+            try:
+                self._client.continuous_move(
+                    velocity_pan,
+                    velocity_tilt,
+                    max(0.02, min(2.0, pulse)),
+                )
+                self._record_success()
+            except Exception as exc:
+                self._record_failure(exc)
+                raise RuntimeError(
+                    f"{self.config.camera_id}: native ONVIF PTZ movement failed: "
+                    f"{self._connection_error}"
+                ) from exc
 
     def stop(self) -> None:
-        return
+        with self._lock:
+            try:
+                self._client.stop()
+                self._record_success()
+            except Exception as exc:
+                self._record_failure(exc)
+                raise RuntimeError(
+                    f"{self.config.camera_id}: native ONVIF stop failed: "
+                    f"{self._connection_error}"
+                ) from exc
 
     def status(self) -> dict[str, Any]:
         status = super().status()
@@ -210,12 +222,14 @@ class TapoC200Driver(CameraDriver):
         if bool(self.config.options.get("query_device_info", False)):
             try:
                 with self._lock:
-                    status["device"] = self._connect().getBasicInfo()
+                    status["ptz_status"] = self._client.get_status()
+                self._record_success()
                 status["available"] = True
                 status["connection_state"] = "available"
                 status.pop("error", None)
             except Exception as exc:
+                self._record_failure(exc)
                 status["available"] = False
                 status["connection_state"] = "unavailable"
-                status["error"] = f"{type(exc).__name__}: {exc}"
+                status["error"] = self._connection_error
         return status

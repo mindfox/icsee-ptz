@@ -85,7 +85,12 @@ class TapoHandler(BaseHTTPRequestHandler):
             return self.send_payload(200, synthesized)
 
         upstream = f"http://{self.server.camera.host}:{self.server.onvif_port}{urlsplit(self.path).path}"
-        headers = {key: value for key, value in self.headers.items() if key.lower() not in {"host", "content-length", "connection"}}
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() not in {"host", "content-length", "connection"}
+        }
+        headers["Connection"] = "close"
         try:
             response = self.server.upstream_session.post(
                 upstream,

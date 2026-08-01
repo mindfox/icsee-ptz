@@ -37,7 +37,7 @@ HTML = r'''<!doctype html>
 <script>
 const selector=document.getElementById('camera-selector'),active=document.getElementById('active-camera');
 const messages=new Map(),presetCache=new Map(),diagnosticsCache=new Map();let cameras=[],selectedId=localStorage.getItem('multicam-active-camera')||'',feedTimer=null,logTimer=null,renderedLogs='',activeTab='console';
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]));
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cap=(n,e)=>`<span class="cap${e?'':' off'}">${esc(n)}</span>`;const currentCamera=()=>cameras.find(c=>c.id===selectedId);
 function renderSelector(){if(!cameras.length){selector.innerHTML='<option>No configured cameras</option>';selector.disabled=true;active.className='empty';active.textContent='No configured cameras were returned by the proxy.';return}selector.innerHTML=cameras.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');if(!cameras.some(c=>c.id===selectedId))selectedId=cameras[0].id;selector.value=selectedId;selector.disabled=false}
 function presetLabel(p){const pt=p.position?.pan_tilt||{},z=p.position?.zoom||{};const coords=[pt.x!=null?`x=${pt.x}`:'',pt.y!=null?`y=${pt.y}`:'',z.x!=null?`z=${z.x}`:''].filter(Boolean).join(', ');return `${p.name||'(unnamed)'} [${p.token}]${coords?` — ${coords}`:''}`}
